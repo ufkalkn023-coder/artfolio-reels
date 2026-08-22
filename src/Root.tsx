@@ -1,10 +1,9 @@
-import "./index.css";
-import { MyComposition } from "./Composition";
+import { ArtfolioReel } from "./Composition";
 
 export const RemotionRoot: React.FC = () => {
   return (
     <>
-      <MyComposition />
+      <ArtfolioReel />
     </>
   );
 };

@@ -1,25 +1,33 @@
-import { CalculateMetadataFunction, Composition } from "remotion";
+import { AbsoluteFill, Composition } from "remotion";
 
-type Props = {};
-
-const calculateMetadata: CalculateMetadataFunction<Props> = () => {
-  return {};
-};
-
-export const MyComposition = () => {
+export const ArtfolioReel = () => {
   return (
     <Composition
-      id="MyComp"
-      component={MyComponent}
-      durationInFrames={60}
+      id="ArtfolioReel"
+      component={ArtfolioReelComponent}
+      durationInFrames={900}
       fps={30}
-      width={1280}
-      height={720}
-      calculateMetadata={calculateMetadata}
+      width={1080}
+      height={1920}
     />
   );
 };
 
-export const MyComponent: React.FC<Props> = () => {
-  return null;
+export const ArtfolioReelComponent: React.FC = () => {
+  return (
+    <AbsoluteFill
+      style={{
+        alignItems: "center",
+        backgroundColor: "#f5efe6",
+        color: "#292521",
+        display: "flex",
+        fontFamily: "Arial, Helvetica, sans-serif",
+        fontSize: 72,
+        justifyContent: "center",
+        letterSpacing: 12,
+      }}
+    >
+      ARTFOLIO
+    </AbsoluteFill>
+  );
 };
