@@ -2,7 +2,7 @@ import { getSafeTargetScale, getTargetHoldStartFrame, resolveArtworkFraming, res
 import { ReelDataSchema, type DetailPoint } from "../src/v2/schema";
 import { SAMPLE_REELS } from "../src/v2/samples";
 import { assertValidReelData, templateIds, validateTemplateRequirements } from "../src/v2/templates";
-import { createScenePlan, getDurationInFrames, validateScenePlan } from "../src/v2/timing";
+import { createScenePlan, getDurationInFrames, resolveDetailSceneContent, resolveOverviewSceneSynthesis, validateScenePlan } from "../src/v2/timing";
 import { DESIGN } from "../src/v2/design";
 import { shouldRenderDetailObservation } from "../src/v2/ReelComposition";
 import { getSafeEditorialFontSize } from "../src/v2/text";
@@ -23,6 +23,14 @@ for (const [templateId, sample] of Object.entries(SAMPLE_REELS)) {
   equal(validateScenePlan(plan).length, 0, `${templateId} has a valid scene plan`);
   truthy(getDurationInFrames(data) > 0, `${templateId} has positive duration`);
   equal(plan.reduce((sum, scene) => sum + scene.durationInFrames, 0), getDurationInFrames(data), `${templateId} duration derives only from scene plan`);
+  for (const scene of plan.filter((candidate) => candidate.kind === "detail")) {
+    const artwork = data.artworks[scene.artworkIndex] ?? data.artworks[0];
+    const content = resolveDetailSceneContent(artwork, scene);
+    truthy(shouldRenderDetailObservation(scene.kind) && content.observation, `${templateId}:${scene.id} has editorial coverage for its detail target`);
+  }
+  for (const scene of plan.filter((candidate) => candidate.kind === "overview")) {
+    truthy(resolveOverviewSceneSynthesis(data.centralIdea, scene), `${templateId}:${scene.id} has central-idea overview coverage`);
+  }
 }
 
 const invalidTemplate = ReelDataSchema.safeParse({ ...SAMPLE_REELS["look-closer"], template: "not-a-template" });
@@ -69,12 +77,10 @@ const explicitTargetPlan = createScenePlan({ ...SAMPLE_REELS["look-closer"], sce
   { id: "outro", kind: "outro", seconds: 3 },
 ] });
 equal(explicitTargetPlan[2].detailIndex, 1, "observation camera uses its explicit detail target rather than observation prose");
+equal(resolveOverviewSceneSynthesis(SAMPLE_REELS["look-closer"].centralIdea, explicitTargetPlan[4]), SAMPLE_REELS["look-closer"].centralIdea, "overview uses the plan-level synthesis");
+equal(resolveOverviewSceneSynthesis(SAMPLE_REELS["look-closer"].centralIdea, { ...explicitTargetPlan[4], durationInFrames: 30 }), undefined, "one-second overview remains an editorially blank transition");
 
-const questionThreeDetails = { ...SAMPLE_REELS["three-details"], hook: "What separates the two sides?", hookType: "QUESTION" as const };
-truthy(shouldRenderDetailObservation(questionThreeDetails, "detail"), "question three-details renders its saved detail observations");
-truthy(shouldRenderDetailObservation({ ...questionThreeDetails, hookType: undefined }, "detail"), "legacy saved question reels render their detail observations");
-equal(shouldRenderDetailObservation(questionThreeDetails, "overview"), false, "overview remains artwork-led");
-equal(shouldRenderDetailObservation({ ...questionThreeDetails, template: "look-closer" }, "detail"), false, "other templates keep their established density");
+equal(shouldRenderDetailObservation("overview"), false, "overview remains artwork-led");
 truthy(getSafeEditorialFontSize("A spotted snake loops tightly over the forearm, positioned directly against the exposed skin.", "observation", 760, 3) >= 47, "text fitting does not shrink approved observations below the readable bound");
 
 console.log("V2 engine tests passed");

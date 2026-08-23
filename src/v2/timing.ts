@@ -1,4 +1,4 @@
-import { secondsToFrames } from "./design";
+import { VIDEO, secondsToFrames } from "./design";
 import { type Artwork, type DetailPoint, type ReelData, type SceneInput, type SceneKind } from "./schema";
 import { getTemplate } from "./templates";
 
@@ -33,6 +33,15 @@ export const resolveDetailSceneContent = (artwork: Artwork, scene: PlannedScene)
     target,
   };
 };
+
+/**
+ * Overview copy deliberately comes only from the plan-level synthesis. It
+ * must never inherit a detail observation from the preceding camera scene.
+ */
+export const resolveOverviewSceneSynthesis = (centralIdea: string | undefined, scene: PlannedScene): string | undefined =>
+  scene.kind === "overview" && scene.durationInFrames > VIDEO.fps && centralIdea?.trim()
+    ? centralIdea.trim()
+    : undefined;
 
 export const createScenePlan = (data: ReelData): PlannedScene[] => {
   const template = getTemplate(data.template);

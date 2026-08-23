@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { resolveDetailSceneContent, createScenePlan, type PlannedScene } from "../src/v2/timing";
+import { resolveDetailSceneContent, resolveOverviewSceneSynthesis, createScenePlan, type PlannedScene } from "../src/v2/timing";
 import { ReelDataSchema, type ReelData } from "../src/v2/schema";
+import { shouldRenderDetailObservation } from "../src/v2/ReelComposition";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -25,6 +26,9 @@ const detailContentFor = (reel: ReelData, id: string) => {
   return resolveDetailSceneContent(artwork, scene);
 };
 
+const overviewSynthesisFor = (reel: ReelData, id: string): string | undefined =>
+  resolveOverviewSceneSynthesis(reel.centralIdea, sceneById(reel, id));
+
 const assertSceneUsesOneDetail = (reel: ReelData, scene: PlannedScene): void => {
   const artwork = reel.artworks[scene.artworkIndex] ?? reel.artworks[0];
   const content = resolveDetailSceneContent(artwork, scene);
@@ -35,10 +39,13 @@ const assertSceneUsesOneDetail = (reel: ReelData, scene: PlannedScene): void => 
   equal(content.target, expected, `${scene.id} passes that same detail to the camera`);
 };
 
-for (const id of ["met_436575", "met_435860", "met_438821", "met_436011"]) {
+for (const id of ["met_436575", "met_435860", "met_438821", "met_436011", "met_436001", "met_437055", "met_437508", "met_437216", "met_437455"]) {
   const reel = loadReel(id);
   for (const scene of createScenePlan(reel).filter((candidate) => candidate.kind === "detail" || candidate.kind === "observation")) {
     assertSceneUsesOneDetail(reel, scene);
+    if (scene.kind === "detail" && scene.durationInFrames > 23) {
+      truthy(shouldRenderDetailObservation(scene.kind), `${id}:${scene.id} renders its matching detail observation`);
+    }
   }
 }
 
@@ -85,5 +92,19 @@ const missingObservation = ReelDataSchema.parse({
 const missingSash = detailContentFor(missingObservation, "scene-obs-2");
 equal(missingSash.detailId, "diagonal-sash", "missing text preserves the selected detail target");
 equal(missingSash.observation, undefined, "missing text does not reuse the previous detail observation");
+truthy(shouldRenderDetailObservation("detail"), "a detail scene renders editorial copy without an observationIndex");
+
+for (const id of ["met_436001", "met_437055", "met_437508", "met_437216", "met_437455"]) {
+  const reel = loadReel(id);
+  const cachedPlan = JSON.parse(readFileSync(`data/plans/${id}.json`, "utf8")) as { plan: { centralIdea: string } };
+  const plan = createScenePlan(reel);
+  const lastDetail = [...plan].reverse().find((scene) => scene.kind === "detail");
+  const overview = [...plan].reverse().find((scene) => scene.kind === "overview");
+  if (!lastDetail || !overview) throw new Error(`${id} requires a final detail and overview scene`);
+  const lastDetailObservation = resolveDetailSceneContent(reel.artworks[lastDetail.artworkIndex] ?? reel.artworks[0], lastDetail).observation;
+  const synthesis = overviewSynthesisFor(reel, overview.id);
+  equal(synthesis, cachedPlan.plan.centralIdea, `${id} overview renders its cached centralIdea`);
+  truthy(synthesis !== lastDetailObservation, `${id} overview never reuses the preceding detail observation`);
+}
 
 console.log("Detail observation sync tests passed");

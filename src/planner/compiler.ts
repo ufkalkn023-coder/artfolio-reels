@@ -54,6 +54,7 @@ export const compileSingleArtworkPlan = (
     title: template.label,
     hook: plan.hook.text,
     hookType: plan.hook.type,
+    centralIdea: plan.centralIdea,
     label: "AN ARTFOLIO STUDY",
     artworks: [{
       id: artwork.canonicalId,

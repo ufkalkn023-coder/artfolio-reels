@@ -126,6 +126,9 @@ export const ReelDataSchema = z.object({
   // Saved production reels created before this field existed remain valid; their
   // question hooks are detected from their terminal question mark at render time.
   hookType: HookTypeSchema.optional(),
+  // Compiled from ReelPlan.centralIdea. Optional keeps already-saved V2 reels
+  // renderable while cached plans are progressively recompiled.
+  centralIdea: z.string().min(1).max(180).optional(),
   label: z.string().min(1).max(36).default("AN ARTFOLIO STUDY"),
   artworks: z.array(ArtworkSchema).min(1).max(2),
   observations: z.array(z.string().min(1).max(120)).default([]),

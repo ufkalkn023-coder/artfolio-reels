@@ -306,6 +306,7 @@ const verifyAsyncPlannerBehavior = async (): Promise<void> => {
   // This test deliberately does not import the Gemini client: saved plans compile without credentials.
   const savedPlanWithoutGemini = compileSingleArtworkPlan(STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN, eligibility);
   equal(savedPlanWithoutGemini.reel.id, "starry-night", "saved plan render boundary needs no GEMINI_API_KEY");
+  equal(savedPlanWithoutGemini.reel.centralIdea, STARRY_NIGHT_MOCK_PLAN.centralIdea, "compiler carries the existing plan synthesis into ReelData");
 
   const acceptance = assessReelPlanAcceptance(validPlan, { artwork: STARRY_NIGHT_HANDOFF });
   equal(acceptance.accepted, true, "approved valid plan is accepted");

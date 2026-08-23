@@ -27,6 +27,7 @@ const base = {
   version: 2 as const,
   templateVersion: "2.0",
   label: "AN ARTFOLIO STUDY",
+  centralIdea: "Repetitive curved strokes generate rhythmic movement across the sky, land, and foreground.",
   artworks: [starryNight],
   observations: [
     "Movement begins in the sky, not in the story.",

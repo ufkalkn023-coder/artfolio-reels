@@ -1,4 +1,4 @@
-import { AbsoluteFill, Easing, interpolate, useCurrentFrame } from "remotion";
+import { AbsoluteFill, Easing, interpolate, Sequence, useCurrentFrame } from "remotion";
 import { ArtworkCamera, resolveArtworkFraming, targetNeedsTopText } from "./camera";
 import { DESIGN } from "./design";
 import { type Artwork, type CameraSettings, type DetailPoint } from "./schema";
@@ -30,11 +30,23 @@ export const MasterIntroScene: React.FC<SceneBase & { hook: string; label: strin
   </AbsoluteFill>
 );
 
-export const ArtworkOverviewScene: React.FC<SceneBase> = ({ artwork, durationInFrames, camera }) => (
-  <AbsoluteFill>
-    <ArtworkCamera src={artwork.src} durationInFrames={durationInFrames} camera={camera ?? { move: "none", focalX: 0.5, focalY: 0.5, startScale: 1 }} contain darkBackdrop />
-  </AbsoluteFill>
-);
+export const ArtworkOverviewScene: React.FC<SceneBase & { synthesis?: string }> = ({ artwork, durationInFrames, camera, synthesis }) => {
+  // Leave at least one readable second after the artwork establishes itself.
+  const synthesisStartFrame = Math.min(18, Math.max(0, durationInFrames - 30));
+  return (
+    <AbsoluteFill>
+      <ArtworkCamera src={artwork.src} durationInFrames={durationInFrames} camera={camera ?? { move: "none", focalX: 0.5, focalY: 0.5, startScale: 1 }} contain darkBackdrop />
+      {synthesis ? (
+        <Sequence from={synthesisStartFrame} layout="none">
+          <AbsoluteFill style={{ backgroundColor: "rgba(4, 10, 15, 0.2)" }} />
+          <EditorialText kind="observation" maxLines={3} maxWidth={760} style={{ bottom: DESIGN.safe.bottom + 80, left: DESIGN.safe.left, position: "absolute", textShadow: "0 3px 20px rgba(0,0,0,0.52)" }}>
+            {synthesis}
+          </EditorialText>
+        </Sequence>
+      ) : null}
+    </AbsoluteFill>
+  );
+};
 
 export const ArtworkDetailScene: React.FC<SceneBase & { detail: DetailPoint; observation?: string; label?: string }> = ({ artwork, durationInFrames, camera, detail, observation, label, debugTargetOverlay }) => {
   const configuredCamera = camera ?? { move: "detail-hold" as const, focalX: detail.focalX, focalY: detail.focalY, startScale: detail.scale, endScale: detail.scale + 0.05 };

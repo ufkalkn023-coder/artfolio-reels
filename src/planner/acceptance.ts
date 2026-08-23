@@ -15,6 +15,7 @@ export const PlanRejectionCode = {
   INVALID_SCALE: "INVALID_SCALE",
   EXCESSIVE_CAMERA_MOTION: "EXCESSIVE_CAMERA_MOTION",
   TEMPLATE_STRUCTURE_MISMATCH: "TEMPLATE_STRUCTURE_MISMATCH",
+  INSUFFICIENT_EDITORIAL_COVERAGE: "INSUFFICIENT_EDITORIAL_COVERAGE",
   FALLBACK_PLAN: "FALLBACK_PLAN",
   METADATA_MISMATCH: "METADATA_MISMATCH",
 } as const;
@@ -46,9 +47,28 @@ export type ReelPlanAcceptance = {
 
 const MAX_HOOK_WORDS = 12;
 const CLOSE_DETAIL_THRESHOLD = 0.2;
+const TRANSITION_ONLY_MAX_SECONDS = 0.75;
 const isMotion = (move: string | undefined): boolean => move !== undefined && move !== "none" && move !== "detail-hold";
 const wordCount = (value: string): number => value.trim().split(/\s+/).filter(Boolean).length;
 const distance = (left: PlannedDetail, right: PlannedDetail): number => Math.hypot(left.focalX - right.focalX, left.focalY - right.focalY);
+
+const detailForScene = (scene: ReelPlan["scenes"][number], details: Map<string, PlannedDetail>, orderedDetails: readonly PlannedDetail[]): PlannedDetail | undefined => {
+  if (scene.detailId) return details.get(scene.detailId);
+  return scene.kind === "observation" && scene.observationIndex !== undefined
+    ? orderedDetails[scene.observationIndex]
+    : undefined;
+};
+
+const needsEditorialCoverage = (scene: ReelPlan["scenes"][number]): boolean =>
+  ((scene.kind === "detail" || scene.kind === "observation") && scene.seconds > TRANSITION_ONLY_MAX_SECONDS) ||
+  (scene.kind === "overview" && scene.seconds > 1);
+
+const editorialTextForScene = (
+  plan: ReelPlan,
+  scene: ReelPlan["scenes"][number],
+  details: Map<string, PlannedDetail>,
+): string | undefined =>
+  scene.kind === "overview" ? plan.centralIdea : detailForScene(scene, details, plan.details)?.observation;
 
 const maximumMotionScenes = (sceneCount: number): number => Math.max(2, Math.ceil(sceneCount / 2));
 
@@ -105,11 +125,18 @@ export const assessReelPlanAcceptance = (
     .map((scene) => scene.detailId ? detailById.get(scene.detailId) : undefined)
     .filter((detail): detail is PlannedDetail => detail !== undefined);
   const detailSceneIds = new Set(plan.scenes.filter((scene) => scene.kind === "detail").map((scene) => scene.detailId));
+  const observationScenesResolveDetails = plan.scenes
+    .filter((scene) => scene.kind === "observation")
+    .every((scene) => detailForScene(scene, detailById, plan.details) !== undefined);
   if (selectedDetails.length !== plan.scenes.filter((scene) => scene.kind === "detail").length ||
     detailSceneIds.size < template.requiredDetailCount ||
-    plan.scenes.some((scene) => scene.kind === "observation" && scene.observationIndex === undefined) ||
+    !observationScenesResolveDetails ||
     plan.scenes.some((scene) => scene.observationIndex !== undefined && scene.observationIndex >= plan.details.length)) {
     reject(PlanRejectionCode.TEMPLATE_STRUCTURE_MISMATCH);
+  }
+
+  if (plan.scenes.some((scene) => needsEditorialCoverage(scene) && !editorialTextForScene(plan, scene, detailById)?.trim())) {
+    reject(PlanRejectionCode.INSUFFICIENT_EDITORIAL_COVERAGE);
   }
 
   plan.details.forEach((detail) => {
