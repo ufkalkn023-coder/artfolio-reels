@@ -1,0 +1,14 @@
+{
+  "canonicalId": "starry-night",
+  "source": "moma",
+  "title": "The Starry Night",
+  "artist": "Vincent van Gogh",
+  "date": "1889",
+  "medium": "Oil on canvas",
+  "museum": "Museum of Modern Art, New York",
+  "classification": "Paintings",
+  "imagePath": "public/artworks/starry-night.jpg",
+  "imageWidth": 3840,
+  "imageHeight": 3041,
+  "rightsStatus": "CONFIRMED_PUBLIC_DOMAIN"
+}
