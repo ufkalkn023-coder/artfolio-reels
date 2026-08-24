@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
-import { resolveDetailSceneContent, resolveOverviewSceneSynthesis, createScenePlan, type PlannedScene } from "../src/v2/timing";
+import { resolveDetailSceneContent, resolveOverviewSceneSynthesis, createScenePlan, shouldRenderDetailObservation, type PlannedScene } from "../src/v2/timing";
 import { ReelDataSchema, type ReelData } from "../src/v2/schema";
-import { shouldRenderDetailObservation } from "../src/v2/ReelComposition";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -26,8 +25,12 @@ const detailContentFor = (reel: ReelData, id: string) => {
   return resolveDetailSceneContent(artwork, scene);
 };
 
-const overviewSynthesisFor = (reel: ReelData, id: string): string | undefined =>
-  resolveOverviewSceneSynthesis(reel.centralIdea, sceneById(reel, id));
+const overviewSynthesisFor = (reel: ReelData, id: string): string | undefined => {
+  const plan = createScenePlan(reel);
+  const scene = plan.find((candidate) => candidate.id === id);
+  if (!scene) throw new Error(`Missing scene ${id}`);
+  return resolveOverviewSceneSynthesis(reel.centralIdea, scene, plan);
+};
 
 const assertSceneUsesOneDetail = (reel: ReelData, scene: PlannedScene): void => {
   const artwork = reel.artworks[scene.artworkIndex] ?? reel.artworks[0];
@@ -41,10 +44,16 @@ const assertSceneUsesOneDetail = (reel: ReelData, scene: PlannedScene): void => 
 
 for (const id of ["met_436575", "met_435860", "met_438821", "met_436011", "met_436001", "met_437055", "met_437508", "met_437216", "met_437455"]) {
   const reel = loadReel(id);
-  for (const scene of createScenePlan(reel).filter((candidate) => candidate.kind === "detail" || candidate.kind === "observation")) {
+  const plan = createScenePlan(reel);
+  for (const [sceneIndex, scene] of plan.entries()) {
+    if (scene.kind !== "detail" && scene.kind !== "observation") continue;
     assertSceneUsesOneDetail(reel, scene);
     if (scene.kind === "detail" && scene.durationInFrames > 23) {
-      truthy(shouldRenderDetailObservation(scene.kind), `${id}:${scene.id} renders its matching detail observation`);
+      const nextScene = plan[sceneIndex + 1];
+      const isPaired = nextScene?.kind === "observation" &&
+        nextScene.artworkIndex === scene.artworkIndex &&
+        nextScene.detailIndex === scene.detailIndex;
+      equal(shouldRenderDetailObservation(scene, nextScene), !isPaired, `${id}:${scene.id} assigns observation copy from resolved scene adjacency`);
     }
   }
 }
@@ -92,7 +101,12 @@ const missingObservation = ReelDataSchema.parse({
 const missingSash = detailContentFor(missingObservation, "scene-obs-2");
 equal(missingSash.detailId, "diagonal-sash", "missing text preserves the selected detail target");
 equal(missingSash.observation, undefined, "missing text does not reuse the previous detail observation");
-truthy(shouldRenderDetailObservation("detail"), "a detail scene renders editorial copy without an observationIndex");
+const missingObservationPlan = createScenePlan(missingObservation);
+const unpairedDetailIndex = missingObservationPlan.findIndex((scene, index) =>
+  scene.kind === "detail" && missingObservationPlan[index + 1]?.kind !== "observation"
+);
+truthy(unpairedDetailIndex >= 0, "the control reel has an unpaired detail scene");
+truthy(shouldRenderDetailObservation(missingObservationPlan[unpairedDetailIndex], missingObservationPlan[unpairedDetailIndex + 1]), "an unpaired detail scene renders editorial copy");
 
 for (const id of ["met_436001", "met_437055", "met_437508", "met_437216", "met_437455"]) {
   const reel = loadReel(id);

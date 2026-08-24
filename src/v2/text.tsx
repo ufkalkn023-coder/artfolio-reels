@@ -28,17 +28,23 @@ export const getSafeEditorialFontSize = (
   return Math.max(minimumReadableSize, Math.min(baseSize, estimatedFit));
 };
 
+export const getEditorialRevealProgress = (frame: number, revealStartFrame = 0): number =>
+  interpolate(frame, [revealStartFrame, revealStartFrame + 14], [0, 1], {
+    easing: Easing.bezier(0.16, 1, 0.3, 1),
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+
 export const EditorialText: React.FC<{
   children: string;
   kind: EditorialTextKind;
   maxWidth: number;
   maxLines: number;
+  revealStartFrame?: number;
   style?: React.CSSProperties;
-}> = ({ children, kind, maxWidth, maxLines, style }) => {
+}> = ({ children, kind, maxWidth, maxLines, revealStartFrame = 0, style }) => {
   const frame = useCurrentFrame();
-  const reveal = interpolate(frame, [0, 14], [0, 1], {
-    easing: Easing.bezier(0.16, 1, 0.3, 1), extrapolateLeft: "clamp", extrapolateRight: "clamp",
-  });
+  const reveal = getEditorialRevealProgress(frame, revealStartFrame);
   const fontSize = getSafeEditorialFontSize(children, kind, maxWidth, maxLines);
   return (
     <div

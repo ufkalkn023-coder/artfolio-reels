@@ -20,6 +20,21 @@ export type DetailSceneContent = {
 };
 
 /**
+ * A following observation scene owns the editorial copy when both resolved
+ * scenes point at the same detail in the same artwork.
+ */
+export const shouldRenderDetailObservation = (
+  scene: PlannedScene,
+  nextScene: PlannedScene | undefined,
+): boolean =>
+  scene.kind === "detail" && !(
+    nextScene?.kind === "observation" &&
+    scene.artworkIndex === nextScene.artworkIndex &&
+    scene.detailIndex !== undefined &&
+    scene.detailIndex === nextScene.detailIndex
+  );
+
+/**
  * Resolves every detail-facing value from one scene-selected detail. In
  * particular, a legacy observationIndex must never select the displayed copy
  * after detailId has selected a different target.
@@ -36,12 +51,23 @@ export const resolveDetailSceneContent = (artwork: Artwork, scene: PlannedScene)
 
 /**
  * Overview copy deliberately comes only from the plan-level synthesis. It
- * must never inherit a detail observation from the preceding camera scene.
+ * must never inherit a detail observation from the preceding camera scene,
+ * and only the final editorially eligible overview in the resolved plan owns
+ * that synthesis.
  */
-export const resolveOverviewSceneSynthesis = (centralIdea: string | undefined, scene: PlannedScene): string | undefined =>
-  scene.kind === "overview" && scene.durationInFrames > VIDEO.fps && centralIdea?.trim()
-    ? centralIdea.trim()
-    : undefined;
+export const resolveOverviewSceneSynthesis = (
+  centralIdea: string | undefined,
+  scene: PlannedScene,
+  plan: readonly PlannedScene[],
+): string | undefined => {
+  if (scene.kind !== "overview" || scene.durationInFrames <= VIDEO.fps || !centralIdea?.trim()) {
+    return undefined;
+  }
+  const finalEligibleOverview = [...plan].reverse().find(
+    (candidate) => candidate.kind === "overview" && candidate.durationInFrames > VIDEO.fps,
+  );
+  return scene === finalEligibleOverview ? centralIdea.trim() : undefined;
+};
 
 export const createScenePlan = (data: ReelData): PlannedScene[] => {
   const template = getTemplate(data.template);

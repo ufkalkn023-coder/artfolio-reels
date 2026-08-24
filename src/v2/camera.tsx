@@ -9,11 +9,98 @@ export type Framing = {
   contain: boolean;
   targetBounds?: { left: number; top: number; width: number; height: number };
 };
+export type ContainTransform = {
+  left: number; top: number; width: number; height: number; scale: number; translateX: number; translateY: number;
+};
 
 const clamp = (value: number, min = 0, max = 1): number => Math.min(max, Math.max(min, value));
 const OUTPUT_RATIO = VIDEO.width / VIDEO.height;
 const TARGET_ENTER_MAX_FRAMES = 18;
 const TARGET_REGION_PADDING = 0.08;
+const CONTAIN_PAN_STRENGTH = 0.25;
+const CONTAIN_MAX_PAN_FRACTION = 0.025;
+const CONTAIN_MAX_ZOOM_DELTA = 0.03;
+
+type ContainPadding = string | number;
+type ResolvedPadding = { top: number; right: number; bottom: number; left: number };
+
+const finiteOr = (value: number | undefined, fallback: number): number => Number.isFinite(value) ? (value as number) : fallback;
+const containPanOffset = (focal: number | undefined, extent: number): number => clamp(
+  -(finiteOr(focal, 0.5) - 0.5) * extent * CONTAIN_PAN_STRENGTH,
+  -extent * CONTAIN_MAX_PAN_FRACTION,
+  extent * CONTAIN_MAX_PAN_FRACTION,
+);
+const resolveContainPadding = (padding: ContainPadding): ResolvedPadding => {
+  const values = typeof padding === "number"
+    ? [Math.max(0, finiteOr(padding, 0))]
+    : padding.trim().split(/\s+/).map((value) => Number.parseFloat(value)).filter(Number.isFinite).map((value) => Math.max(0, value));
+  const [top = 0, right = top, bottom = top, left = right] = values;
+  if (values.length === 2) return { top, right, bottom: top, left: right };
+  if (values.length === 3) return { top, right, bottom, left: right };
+  return { top, right, bottom, left };
+};
+
+/** Ambient contain motion uses the whole scene, independently of detail-target establishment timing. */
+export const getContainCameraProgress = (frame: number, durationInFrames: number): number => {
+  if (durationInFrames <= 1) return 0;
+  const progress = clamp(finiteOr(frame, 0) / Math.max(1, finiteOr(durationInFrames, 1) - 1));
+  return progress * progress * (3 - 2 * progress);
+};
+
+/** Pure contain-mode geometry. Safe ambient endpoints are derived before full-scene interpolation. */
+export const resolveContainTransform = (
+  artwork: ArtworkDimensions,
+  state: CameraState,
+  progress: number,
+  move: CameraSettings["move"] = "none",
+  padding: ContainPadding = "300px 52px 500px",
+  viewport = VIDEO,
+): ContainTransform => {
+  const viewportWidth = Math.max(1, finiteOr(viewport.width, VIDEO.width));
+  const viewportHeight = Math.max(1, finiteOr(viewport.height, VIDEO.height));
+  const resolvedPadding = resolveContainPadding(padding);
+  const availableWidth = Math.max(1, viewportWidth - resolvedPadding.left - resolvedPadding.right);
+  const availableHeight = Math.max(1, viewportHeight - resolvedPadding.top - resolvedPadding.bottom);
+  const { imageWidth: rawWidth, imageHeight: rawHeight } = dimensionsFor(artwork);
+  const imageWidth = Math.max(1, finiteOr(rawWidth, 1));
+  const imageHeight = Math.max(1, finiteOr(rawHeight, 1));
+  const fit = Math.min(availableWidth / imageWidth, availableHeight / imageHeight);
+  const fittedWidth = imageWidth * fit;
+  const fittedHeight = imageHeight * fit;
+
+  // Historically `none` ignored contain-camera coordinates. Keep that centered and exactly static.
+  const motionProgress = move === "none" ? 0 : clamp(finiteOr(progress, 0));
+  const requestedStartScale = Math.max(0.001, finiteOr(state.startScale, 1));
+  const requestedEndScale = move === "none" ? requestedStartScale : Math.max(0.001, finiteOr(state.endScale, requestedStartScale));
+  const maxRequestedScale = Math.max(requestedStartScale, requestedEndScale);
+  const safeStartScale = clamp(requestedStartScale / maxRequestedScale, 1 - CONTAIN_MAX_ZOOM_DELTA, 1);
+  const safeEndScale = move === "none"
+    ? safeStartScale
+    : clamp(requestedEndScale / maxRequestedScale, 1 - CONTAIN_MAX_ZOOM_DELTA, 1);
+  const scale = safeStartScale + (safeEndScale - safeStartScale) * motionProgress;
+  const width = fittedWidth * scale;
+  const height = fittedHeight * scale;
+  const safePanEndpoint = (focal: number | undefined, extent: number, fittedExtent: number, endpointScale: number): number => {
+    const endpointSlack = Math.max(0, (extent - fittedExtent * endpointScale) / 2);
+    return clamp(containPanOffset(focal, extent), -endpointSlack, endpointSlack);
+  };
+  const startTranslateX = move === "none" ? 0 : safePanEndpoint(state.focalX, availableWidth, fittedWidth, safeStartScale);
+  const endTranslateX = move === "none" ? 0 : safePanEndpoint(state.endFocalX, availableWidth, fittedWidth, safeEndScale);
+  const startTranslateY = move === "none" ? 0 : safePanEndpoint(state.focalY, availableHeight, fittedHeight, safeStartScale);
+  const endTranslateY = move === "none" ? 0 : safePanEndpoint(state.endFocalY, availableHeight, fittedHeight, safeEndScale);
+  const translateX = startTranslateX + (endTranslateX - startTranslateX) * motionProgress;
+  const translateY = startTranslateY + (endTranslateY - startTranslateY) * motionProgress;
+
+  return {
+    left: resolvedPadding.left + (availableWidth - width) / 2 + translateX,
+    top: resolvedPadding.top + (availableHeight - height) / 2 + translateY,
+    width,
+    height,
+    scale,
+    translateX,
+    translateY,
+  };
+};
 
 /** Centralized rhythm policy: establish selected framing promptly, then hold it. */
 export const getTargetHoldStartFrame = (durationInFrames: number): number =>
@@ -151,18 +238,27 @@ export const ArtworkCamera: React.FC<{
   debugTargetOverlay?: boolean; contain?: boolean; containPadding?: string | number; darkBackdrop?: boolean;
 }> = ({ src, durationInFrames, camera, artwork = {}, target, debugTargetOverlay = false, contain = false, containPadding = "300px 52px 500px", darkBackdrop = false }) => {
   const frame = useCurrentFrame();
-  const state = resolveCameraState(target ? resolveTargetCamera(camera, target, artwork) : camera);
+  const configuredCamera = target ? resolveTargetCamera(camera, target, artwork) : camera;
+  const state = resolveCameraState(configuredCamera);
   const options = { easing: Easing.bezier(0.25, 0.1, 0.25, 1), extrapolateLeft: "clamp" as const, extrapolateRight: "clamp" as const };
   const targetEnter = target ? getTargetHoldStartFrame(durationInFrames) : durationInFrames - 1;
   const scale = target ? interpolate(frame, [0, targetEnter, durationInFrames - 1], [state.startScale, state.endScale, state.endScale], options) : interpolate(frame, [0, durationInFrames - 1], [state.startScale, state.endScale], options);
   const x = interpolate(frame, [0, durationInFrames - 1], [state.focalX, state.endFocalX], options);
   const y = interpolate(frame, [0, durationInFrames - 1], [state.focalY, state.endFocalY], options);
+  const cameraProgress = getContainCameraProgress(frame, durationInFrames);
   const resolvedSrc = src.startsWith("http") || src.startsWith("/") ? src : staticFile(src);
   const framing = contain ? undefined : resolveArtworkFraming(artwork, scale, x, y, target);
   const useContain = contain || framing?.contain;
+  const containMove = configuredCamera?.move ?? "none";
+  const containTransform = contain && !framing?.contain && containMove !== "none"
+    ? resolveContainTransform(artwork, state, cameraProgress, containMove, containPadding)
+    : undefined;
   return <AbsoluteFill style={{ backgroundColor: "#111417", overflow: "hidden" }}>
     {darkBackdrop ? <Img src={resolvedSrc} style={{ filter: "blur(32px) brightness(0.25) saturate(0.65)", height: "100%", objectFit: "cover", opacity: 0.5, position: "absolute", scale: 1.12, width: "100%" }} /> : null}
-    {useContain && !framing?.contain ? <AbsoluteFill style={{ alignItems: "center", display: "flex", justifyContent: "center", padding: containPadding }}><Img src={resolvedSrc} style={{ boxShadow: "0 24px 70px rgba(0,0,0,0.35)", height: "100%", objectFit: "contain", width: "100%" }} /></AbsoluteFill> : <Img src={resolvedSrc} style={{ height: framing?.renderedHeight, left: framing?.left, position: "absolute", top: framing?.top, width: framing?.renderedWidth }} />}
+    {useContain && !framing?.contain ? containTransform
+      ? <Img src={resolvedSrc} style={{ boxShadow: "0 24px 70px rgba(0,0,0,0.35)", height: containTransform.height, left: containTransform.left, objectFit: "contain", position: "absolute", top: containTransform.top, width: containTransform.width }} />
+      : <AbsoluteFill style={{ alignItems: "center", display: "flex", justifyContent: "center", padding: containPadding }}><Img src={resolvedSrc} style={{ boxShadow: "0 24px 70px rgba(0,0,0,0.35)", height: "100%", objectFit: "contain", width: "100%" }} /></AbsoluteFill>
+      : <Img src={resolvedSrc} style={{ height: framing?.renderedHeight, left: framing?.left, position: "absolute", top: framing?.top, width: framing?.renderedWidth }} />}
     {debugTargetOverlay && target && framing ? <TargetOverlay target={target} framing={framing} scale={scale} /> : null}
   </AbsoluteFill>;
 };
