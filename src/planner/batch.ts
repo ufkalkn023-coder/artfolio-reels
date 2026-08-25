@@ -11,10 +11,11 @@ import { artifactIdFor, writeReelArtifact } from "./pipeline";
 import { planArtwork, type PlannerCall } from "./service";
 import { type PlannerUsageTelemetry } from "./telemetry";
 import { PLANNER_VERSION } from "./config";
-import { recordProductionHistory, type ProductionHistoryStatus, type ReelProductionHistory } from "./production-history";
+import { recentMusicContextFromProductionHistory, recordProductionHistory, type ProductionHistoryStatus, type ReelProductionHistory } from "./production-history";
 import { resolveRenderOutputPath } from "./render-path";
 import { PlannerFailureCategory, classifyPlannerFailure, type PlannerFailureCategory as PlannerFailureCategoryValue } from "./failure";
 import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
+import { type MusicSuggestions } from "./reel-plan";
 
 export const REEL_BATCH_VERSION = "reel-batch-v1" as const;
 
@@ -66,6 +67,7 @@ export type BatchCandidateAttempt = {
   qcPath?: string;
   renderPath?: string;
   socialPath?: string;
+  musicSuggestions?: MusicSuggestions;
   historyStatus?: ProductionHistoryStatus;
   plannerFailureCategory?: PlannerFailureCategoryValue;
   errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED";
@@ -198,6 +200,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       template: attempt.template, plannerVersion: PLANNER_VERSION, batchId: options.batchId, status,
       completedAt: (options.now ?? (() => new Date()))().toISOString(), duration: attempt.duration,
       warnings: attempt.acceptanceWarnings, ...(status === "RENDERED" ? { renderPath: attempt.renderPath } : {}),
+      musicSuggestions: attempt.musicSuggestions,
     });
     productionHistory = result.history;
     attempt.historyStatus = result.entry.status;
@@ -243,7 +246,11 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
     const plannerStarted = performance.now();
     let planned;
     try {
-      planned = await planArtwork(handoff, { cacheDirectory, callPlanner });
+      planned = await planArtwork(handoff, {
+        cacheDirectory,
+        callPlanner,
+        recentMusic: productionHistory ? recentMusicContextFromProductionHistory(productionHistory, undefined, handoff.canonicalId) : undefined,
+      });
       attempt.plannerStatus = planned.cacheHit ? "CACHE" : "LIVE";
       attempt.cacheHit = planned.cacheHit;
       addTelemetry(telemetry, planned.telemetry, planned.cacheHit);
@@ -263,6 +270,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
     attempt.acceptanceWarnings = acceptance.warnings;
     attempt.template = planned.plan.template;
     attempt.duration = durationFor(planned.plan);
+    attempt.musicSuggestions = planned.plan.musicSuggestions;
     if (!acceptance.accepted) {
       attempt.acceptanceStatus = "REJECTED";
       attempt.plannerFailureCategory = PlannerFailureCategory.ACCEPTANCE_REJECTED;

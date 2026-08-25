@@ -3,6 +3,8 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { type ArtworkHandoff } from "./handoff";
+import { RECENT_MUSIC_REEL_LIMIT, type RecentMusicContext, normalizedMusicArtist } from "./music-history";
+import { MusicSuggestionsSchema, musicTrackIdentity } from "./reel-plan";
 
 export const REEL_PRODUCTION_HISTORY_VERSION = "reel-production-history-v1" as const;
 
@@ -24,6 +26,7 @@ export const ReelProductionHistoryEntrySchema = z.object({
   renderPath: z.string().trim().min(1).max(1000).optional(),
   duration: z.number().positive().max(60).optional(),
   warnings: z.array(z.string().trim().min(1).max(160)).max(20).optional(),
+  musicSuggestions: MusicSuggestionsSchema.optional(),
 }).strict().superRefine((entry, context) => {
   if (entry.status === "RENDERED" && (!entry.renderedAt || !entry.renderPath)) {
     context.addIssue({ code: "custom", message: "RENDERED history entries require renderedAt and renderPath" });
@@ -55,6 +58,7 @@ export type RecordProductionHistoryInput = Pick<ArtworkHandoff, "canonicalId" | 
   duration?: number;
   warnings?: string[];
   renderPath?: string;
+  musicSuggestions?: z.infer<typeof MusicSuggestionsSchema>;
 };
 
 export type RecordProductionHistoryResult = {
@@ -88,6 +92,39 @@ export const productionHistoryExcludedCanonicalIds = (history: ReelProductionHis
     .sort()
 );
 
+/** Music diversity is deliberately a rolling window, never a global lifetime ban. */
+export const recentMusicContextFromProductionHistory = (
+  history: ReelProductionHistory,
+  reelLimit = RECENT_MUSIC_REEL_LIMIT,
+  excludeCanonicalId?: string,
+): RecentMusicContext => {
+  const recentEntries = history.entries
+    .filter((entry) => (entry.status === "QC_PASSED" || entry.status === "RENDERED") && entry.canonicalId !== excludeCanonicalId)
+    .sort((left, right) => right.qcPassedAt.localeCompare(left.qcPassedAt))
+    .slice(0, reelLimit);
+  const tracks: RecentMusicContext["tracks"] = [];
+  const trackIds = new Set<string>();
+  const artists = new Map<string, { display: string; count: number }>();
+  for (const entry of recentEntries) {
+    for (const suggestion of entry.musicSuggestions ?? []) {
+      const trackId = musicTrackIdentity(suggestion);
+      if (!trackIds.has(trackId)) {
+        trackIds.add(trackId);
+        tracks.push({ artist: suggestion.artist, title: suggestion.title });
+      }
+      const artistId = normalizedMusicArtist(suggestion.artist);
+      const current = artists.get(artistId);
+      artists.set(artistId, { display: current?.display ?? suggestion.artist, count: (current?.count ?? 0) + 1 });
+    }
+  }
+  const frequentArtists = [...artists.values()]
+    .filter(({ count }) => count > 1)
+    .sort((left, right) => right.count - left.count || left.display.localeCompare(right.display))
+    .slice(0, 8)
+    .map(({ display }) => display);
+  return { tracks, frequentArtists };
+};
+
 export const writeReelProductionHistory = async (path: string, history: ReelProductionHistory): Promise<void> => {
   const validated = ReelProductionHistorySchema.parse(history);
   await mkdir(dirname(path), { recursive: true });
@@ -108,8 +145,18 @@ export const recordProductionHistory = async (
   const validatedHistory = ReelProductionHistorySchema.parse(history);
   const existingIndex = validatedHistory.entries.findIndex((entry) => entry.canonicalId === input.canonicalId);
   const existing = existingIndex === -1 ? undefined : validatedHistory.entries[existingIndex];
-  if (existing?.status === "RENDERED" || (existing?.status === "QC_PASSED" && input.status === "QC_PASSED")) {
+  const repeatedStatus = existing?.status === "RENDERED" || (existing?.status === "QC_PASSED" && input.status === "QC_PASSED");
+  const canBackfillMusic = Boolean(existing && !existing.musicSuggestions && input.musicSuggestions);
+  if (repeatedStatus && !canBackfillMusic) {
     return { history: validatedHistory, entry: existing, changed: false };
+  }
+  if (existing && repeatedStatus && input.musicSuggestions) {
+    const entry = ReelProductionHistoryEntrySchema.parse({ ...existing, musicSuggestions: input.musicSuggestions });
+    const entries = [...validatedHistory.entries];
+    entries[existingIndex] = entry;
+    const next = ReelProductionHistorySchema.parse({ version: REEL_PRODUCTION_HISTORY_VERSION, entries });
+    await writeReelProductionHistory(path, next);
+    return { history: next, entry, changed: true };
   }
   const entry = ReelProductionHistoryEntrySchema.parse({
     canonicalId: input.canonicalId,
@@ -124,6 +171,7 @@ export const recordProductionHistory = async (
     ...(input.status === "RENDERED" ? { renderedAt: input.completedAt, renderPath: input.renderPath } : {}),
     ...(input.duration ? { duration: input.duration } : {}),
     ...(input.warnings?.length ? { warnings: input.warnings } : {}),
+    ...(input.musicSuggestions ? { musicSuggestions: input.musicSuggestions } : existing?.musicSuggestions ? { musicSuggestions: existing.musicSuggestions } : {}),
   });
   const entries = [...validatedHistory.entries];
   if (existingIndex === -1) entries.push(entry); else entries[existingIndex] = entry;

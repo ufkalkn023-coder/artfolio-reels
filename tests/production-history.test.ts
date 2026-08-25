@@ -6,6 +6,7 @@ import {
   loadReelProductionHistory,
   productionHistoryExcludedCanonicalIds,
   productionHistoryForPortfolio,
+  recentMusicContextFromProductionHistory,
   recordProductionHistory,
   writeReelProductionHistory,
 } from "../src/planner/production-history";
@@ -41,8 +42,44 @@ const run = async (): Promise<void> => {
   const noDowngrade = await recordProductionHistory(path, rendered.history, { ...input, status: "QC_PASSED" });
   equal(noDowngrade.entry.status, "RENDERED", "rendered entry never downgrades");
   equal(noDowngrade.changed, false, "downgrade does not rewrite ledger");
+  const backfilled = await recordProductionHistory(path, noDowngrade.history, {
+    ...input,
+    status: "QC_PASSED",
+    musicSuggestions: [
+      { artist: "Composer A", title: "Work A", role: "best_fit", reason: "Specific fit." },
+      { artist: "Composer B", title: "Work B", role: "alternative", reason: "Different fit." },
+      { artist: "Composer C", title: "Work C", role: "cinematic", reason: "Broader fit." },
+    ],
+  });
+  equal(backfilled.entry.status, "RENDERED", "music backfill never downgrades a rendered legacy entry");
+  equal(backfilled.entry.musicSuggestions?.length, 3, "legacy production entry can acquire music metadata on a later successful run");
   equal(productionHistoryForPortfolio(rendered.history)[0].canonicalId, "met_history", "portfolio receives canonical history");
   equal(productionHistoryExcludedCanonicalIds(rendered.history).join(","), "met_history", "successful production history exports canonical exclusion IDs");
+
+  let rollingHistory = emptyReelProductionHistory();
+  for (let index = 0; index < 21; index += 1) {
+    const artist = index === 0 ? "Composer Outside Window" : index < 3 ? "Recent Repeat Composer" : `Composer ${index}`;
+    const recorded = await recordProductionHistory(path, rollingHistory, {
+      canonicalId: `music-${index}`,
+      artist: "Artwork Artist",
+      museum: "Museum",
+      source: "test",
+      template: "why-this-works",
+      batchId: "music-history",
+      status: "QC_PASSED",
+      completedAt: `2026-08-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+      musicSuggestions: [
+        { artist, title: `Track ${index}A`, role: "best_fit", reason: "Specific fit." },
+        { artist: `Alternative ${index}`, title: `Track ${index}B`, role: "alternative", reason: "Different fit." },
+        { artist: `Cinematic ${index}`, title: `Track ${index}C`, role: "cinematic", reason: "Broader fit." },
+      ],
+    });
+    rollingHistory = recorded.history;
+  }
+  const recentMusic = recentMusicContextFromProductionHistory(rollingHistory);
+  equal(recentMusic.tracks.length, 60, "recent history collects music from the latest twenty successful Reels");
+  truthy(!recentMusic.tracks.some(({ artist }) => artist === "Composer Outside Window"), "tracks outside the rolling twenty-Reel window are eligible again");
+  truthy(recentMusic.frequentArtists.includes("Recent Repeat Composer"), "recent repeated composers receive a soft diversity signal");
 
   await writeReelProductionHistory(path, emptyReelProductionHistory());
   truthy((await readdir(root)).every((name) => !name.endsWith(".tmp")), "atomic write leaves no temporary file");

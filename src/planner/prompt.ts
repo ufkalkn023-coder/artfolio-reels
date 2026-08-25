@@ -2,8 +2,13 @@ import { CameraMoveSchema, HOOK_TYPES } from "../v2/schema";
 import { type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
 import { templateConstraintSummary } from "./reel-plan";
+import { EMPTY_RECENT_MUSIC_CONTEXT, formatRecentMusicContext, type RecentMusicContext } from "./music-history";
 
-export const buildGeminiPlannerPrompt = (artwork: ArtworkHandoff, eligibility: ReelEligibility): string => `You are the editorial visual planner for Artfolio, an art-discovery publication.
+export const buildGeminiPlannerPrompt = (
+  artwork: ArtworkHandoff,
+  eligibility: ReelEligibility,
+  recentMusic: RecentMusicContext = EMPTY_RECENT_MUSIC_CONTEXT,
+): string => `You are the editorial visual planner for Artfolio, an art-discovery publication.
 
 Examine the supplied museum artwork image and VERIFIED metadata. Create a short-form Instagram Reel plan that makes the viewer look more carefully at the artwork. You are not writing a museum catalogue entry.
 
@@ -48,5 +53,13 @@ Use one visual idea per scene. Build curiosity → attention → observation →
 CAMERA
 Camera can only use: ${CameraMoveSchema.options.join(", ")}. Camera movement must be slow, calm, deliberate, and serve the returned visual target; stillness is preferred over unnecessary motion. Do not assign movement to every scene. COMPACT targets should use detail-hold or restrained zoom, not arbitrary pans. REGION targets should use stable framing or a gentle zoom. RELATION targets must keep the whole relationship understandable, using a deliberate travel only when it helps. Establish the target while its observation is read, then leave a meaningful hold. Use a pan only when directional travel reveals a wider visual path or composition; do not pan across a tiny isolated focal point. detail-hold is always appropriate when the selected region is already well framed. Never use free-form camera directions.
 
+MUSIC SUGGESTIONS
+Return exactly three distinct, identifiable, searchable compositions or tracks selected for this specific artwork and Reel narrative. Consider the verified title, artist, date, classification, geographic/cultural context when known from verified metadata or clearly visible in the supplied work, visible subject, mood, palette, light, emotional tone, narrative intensity, and Reel pacing. Do not default every artwork to generic European classical music; culturally specific works require culturally and aesthetically considered choices. Historical compatibility is useful but visual and emotional fit also matters.
+
+Use these exact structural roles in this order: best_fit (strongest contextual match), alternative (a genuinely different but appropriate interpretation), cinematic (a broader atmospheric or accessible option suitable for Instagram without becoming aesthetically absurd). Give an actual artist/composer and track/work title, never a vague genre or mood label. Do not invent works. Do not return three near-identical choices or overuse universally obvious social-media tracks. Each reason must be one concise sentence. Do not claim availability in Instagram's catalogue.
+
+${formatRecentMusicContext(recentMusic)}
+Recent tracks are a strong exclusion for this plan. Recent composer/artist frequency is only a soft diversity signal and never a permanent ban.
+
 Do not choose two-works-one-idea: this request contains exactly one artwork. Return only JSON with this shape:
-{"template":"...","hook":{"type":"QUESTION","text":"..."},"centralIdea":"...","details":[{"id":"...","label":"...","observation":"...","focalX":0.5,"focalY":0.5,"preferredScale":1.2,"targetType":"COMPACT"}],"scenes":[{"id":"...","kind":"intro","seconds":2.2,"camera":{"move":"none"}},{"id":"...","kind":"observation","seconds":3,"detailId":"...","observationIndex":0,"camera":{"move":"detail-hold"}}]}`;
+{"template":"...","hook":{"type":"QUESTION","text":"..."},"centralIdea":"...","details":[{"id":"...","label":"...","observation":"...","focalX":0.5,"focalY":0.5,"preferredScale":1.2,"targetType":"COMPACT"}],"scenes":[{"id":"...","kind":"intro","seconds":2.2,"camera":{"move":"none"}},{"id":"...","kind":"observation","seconds":3,"detailId":"...","observationIndex":0,"camera":{"move":"detail-hold"}}],"musicSuggestions":[{"artist":"...","title":"...","role":"best_fit","reason":"..."},{"artist":"...","title":"...","role":"alternative","reason":"..."},{"artist":"...","title":"...","role":"cinematic","reason":"..."}]}`;

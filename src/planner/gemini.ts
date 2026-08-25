@@ -4,10 +4,11 @@ import { getGeminiConfig, type GeminiThinkingLevel } from "./config";
 import { type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
 import { buildGeminiPlannerPrompt } from "./prompt";
-import { ReelPlanSchema } from "./reel-plan";
+import { NewReelPlanSchema } from "./reel-plan";
 import { appendPlannerUsageTelemetry, createPlannerUsageTelemetry } from "./telemetry";
 import { type PlannerCallResult } from "./service";
 import { PlannerFailureCategory, PlannerFailureError } from "./failure";
+import { EMPTY_RECENT_MUSIC_CONTEXT, type RecentMusicContext } from "./music-history";
 
 const mimeForPath = (filePath: string): string => ({ ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp" }[extname(filePath).toLowerCase()] ?? "image/jpeg");
 
@@ -55,10 +56,10 @@ const toGeminiResponseJsonSchema = (input: unknown): GeminiJsonSchema => {
 };
 
 /**
- * This is derived from ReelPlanSchema rather than hand-maintained so nested
+ * This is derived from NewReelPlanSchema rather than hand-maintained so nested
  * details, scenes, enums, and required fields cannot silently drift.
  */
-export const GEMINI_PLANNER_RESPONSE_SCHEMA = toGeminiResponseJsonSchema(ReelPlanSchema.toJSONSchema()) as GeminiObjectSchema;
+export const GEMINI_PLANNER_RESPONSE_SCHEMA = toGeminiResponseJsonSchema(NewReelPlanSchema.toJSONSchema()) as GeminiObjectSchema;
 
 export const buildGeminiPlannerGenerationConfig = (thinkingLevel: GeminiThinkingLevel) => ({
   // This raw REST generateContent request supplies JSON Schema through
@@ -152,7 +153,11 @@ const parseGeminiErrorResponse = async (response: Response): Promise<unknown> =>
 };
 
 /** Called only by the planning CLI after eligibility and cache checks; never imported by render/QC paths. */
-export const planWithGemini = async (artwork: ArtworkHandoff, eligibility: ReelEligibility): Promise<PlannerCallResult> => {
+export const planWithGemini = async (
+  artwork: ArtworkHandoff,
+  eligibility: ReelEligibility,
+  recentMusic: RecentMusicContext = EMPTY_RECENT_MUSIC_CONTEXT,
+): Promise<PlannerCallResult> => {
   const { apiKey, model, thinkingLevel } = getGeminiConfig();
   if (!apiKey) throw new Error("GEMINI_API_KEY is required only when generating a new plan");
   const imageBytes = await readFile(resolve(artwork.imagePath));
@@ -162,7 +167,7 @@ export const planWithGemini = async (artwork: ArtworkHandoff, eligibility: ReelE
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [
-        { text: buildGeminiPlannerPrompt(artwork, eligibility) },
+        { text: buildGeminiPlannerPrompt(artwork, eligibility, recentMusic) },
         { inlineData: { mimeType: mimeForPath(artwork.imagePath), data: imageBytes.toString("base64") } },
       ] }],
       generationConfig: buildGeminiPlannerGenerationConfig(thinkingLevel),
@@ -192,7 +197,7 @@ export const planWithGemini = async (artwork: ArtworkHandoff, eligibility: ReelE
   const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
   if (!text) throw new Error("Gemini planner returned no structured content");
   const parsed = JSON.parse(text) as unknown;
-  const plan = ReelPlanSchema.safeParse(parsed);
+  const plan = NewReelPlanSchema.safeParse(parsed);
   if (!plan.success) {
     throw new Error(`Gemini planner structured response failed local validation (${summarizeInvalidReelPlanResponse(parsed)})`);
   }

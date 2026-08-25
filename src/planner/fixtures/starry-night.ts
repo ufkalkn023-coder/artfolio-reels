@@ -35,4 +35,9 @@ export const STARRY_NIGHT_MOCK_PLAN: ReelPlan = {
     { id: "overview-1", kind: "overview", seconds: 3.5, camera: { move: "zoom-out", focalX: 0.5, focalY: 0.5, startScale: 1.08, endScale: 1 } },
     { id: "outro-1", kind: "outro", seconds: 4, camera: { move: "none" } },
   ],
+  musicSuggestions: [
+    { artist: "Claude Debussy", title: "Nuages", role: "best_fit", reason: "Its drifting orchestral layers echo the sky's rolling, suspended motion." },
+    { artist: "Toru Takemitsu", title: "Rain Tree Sketch II", role: "alternative", reason: "Sparse piano color offers a quieter interpretation of the painting's luminous night." },
+    { artist: "Max Richter", title: "The Trees", role: "cinematic", reason: "A restrained modern pulse supports the Reel's intensity without overpowering the image." },
+  ],
 };

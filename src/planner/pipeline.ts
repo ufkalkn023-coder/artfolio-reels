@@ -9,6 +9,7 @@ import { type ReelEligibility } from "./eligibility";
 import { type PlannerUsageTelemetry } from "./telemetry";
 import { assessReelPlanAcceptance, ReelPlanAcceptanceError, type ReelPlanAcceptance } from "./acceptance";
 import { type ReelPlan } from "./reel-plan";
+import { type RecentMusicContext } from "./music-history";
 
 export type HandoffPipelineResult = CompileResult & {
   handoff: ArtworkHandoff;
@@ -26,6 +27,7 @@ export type HandoffPipelineOptions = {
   callPlanner: PlannerCall;
   compile?: (artwork: ArtworkHandoff, plan: unknown, eligibility: ReelEligibility) => CompileResult;
   localizeArtwork?: (artwork: ArtworkHandoff) => Promise<LocalizedArtworkAsset>;
+  recentMusic?: RecentMusicContext;
 };
 
 export const artifactIdFor = (canonicalId: string): string => canonicalId.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -55,6 +57,7 @@ export const runHandoffPipeline = async (
     cacheDirectory: options.cacheDirectory,
     force: options.forcePlan,
     callPlanner: options.callPlanner,
+    recentMusic: options.recentMusic,
   });
   const acceptance = assessReelPlanAcceptance(planned.plan, { artwork: localized.artwork, isFallback: planned.fallback });
   const acceptanceSummary = acceptance.accepted

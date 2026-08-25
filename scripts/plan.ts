@@ -5,6 +5,7 @@ import { STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
 import { PLANNER_VERSION } from "../src/planner/config";
 import { runHandoffPipeline } from "../src/planner/pipeline";
 import { formatPlannerUsageSummary } from "../src/planner/telemetry";
+import { loadReelProductionHistory, recentMusicContextFromProductionHistory } from "../src/planner/production-history";
 
 const args = process.argv.slice(2);
 const handoffPath = args.find((arg) => !arg.startsWith("--"));
@@ -14,10 +15,12 @@ if (!handoffPath) throw new Error("Usage: npm run plan -- <handoff-json> [--forc
 
 const main = async (): Promise<void> => {
   const rawHandoff = JSON.parse(await readFile(resolve(handoffPath), "utf8"));
+  const productionHistory = await loadReelProductionHistory(resolve("data/reel-production-history.json"));
   const result = await runHandoffPipeline(rawHandoff, {
     cacheDirectory: resolve("data/plans"),
     reelDirectory: resolve("data/reels"),
     forcePlan: force,
+    recentMusic: recentMusicContextFromProductionHistory(productionHistory, undefined, rawHandoff.canonicalId),
     callPlanner: mock
       ? async () => {
         if (rawHandoff.canonicalId !== "starry-night") throw new Error("--mock is available only for the bundled Starry Night fixture");

@@ -7,6 +7,45 @@ const wordCount = (value: string): number => value.trim().split(/\s+/).filter(Bo
 export const DISTANCE_THRESHOLD = 0.12;
 export const DURATION_TOLERANCE_SECONDS = 1 / 30;
 
+export const MusicSuggestionRoleSchema = z.enum(["best_fit", "alternative", "cinematic"]);
+export type MusicSuggestionRole = z.infer<typeof MusicSuggestionRoleSchema>;
+
+export const MusicSuggestionSchema = z.object({
+  artist: z.string().trim().min(1).max(100),
+  title: z.string().trim().min(1).max(140),
+  role: MusicSuggestionRoleSchema,
+  reason: z.string().trim().min(1).max(180),
+}).strict();
+export type MusicSuggestion = z.infer<typeof MusicSuggestionSchema>;
+
+export const normalizeMusicIdentityPart = (value: string): string => value
+  .normalize("NFKD")
+  .replace(/\p{Mark}/gu, "")
+  .toLocaleLowerCase("en-US")
+  .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
+  .trim()
+  .replace(/\s+/g, " ");
+
+export const musicTrackIdentity = (suggestion: Pick<MusicSuggestion, "artist" | "title">): string =>
+  `${normalizeMusicIdentityPart(suggestion.artist)}::${normalizeMusicIdentityPart(suggestion.title)}`;
+
+const MUSIC_SUGGESTION_ROLE_ORDER = ["best_fit", "alternative", "cinematic"] as const;
+
+export const MusicSuggestionsSchema = z.array(MusicSuggestionSchema).length(3).superRefine((suggestions, context) => {
+  const identities = new Set<string>();
+  suggestions.forEach((suggestion, index) => {
+    if (suggestion.role !== MUSIC_SUGGESTION_ROLE_ORDER[index]) {
+      context.addIssue({ code: "custom", path: [index, "role"], message: `music suggestion ${index + 1} must use role ${MUSIC_SUGGESTION_ROLE_ORDER[index]}` });
+    }
+    const identity = musicTrackIdentity(suggestion);
+    if (identities.has(identity)) {
+      context.addIssue({ code: "custom", path: [index], message: "music suggestions must contain distinct artist/title tracks" });
+    }
+    identities.add(identity);
+  });
+});
+export type MusicSuggestions = z.infer<typeof MusicSuggestionsSchema>;
+
 export const PlannedDetailSchema = z.object({
   id: z.string().trim().min(1).max(48),
   label: z.string().trim().min(1).max(36),
@@ -37,7 +76,7 @@ export const PlannedSceneSchema = z.object({
 }).strict();
 export type PlannedScene = z.infer<typeof PlannedSceneSchema>;
 
-export const ReelPlanSchema = z.object({
+const ReelPlanShape = {
   template: TemplateIdSchema,
   hook: z.object({
     type: HookTypeSchema,
@@ -46,15 +85,27 @@ export const ReelPlanSchema = z.object({
   centralIdea: z.string().trim().min(1).max(180),
   details: z.array(PlannedDetailSchema).max(6),
   scenes: z.array(PlannedSceneSchema).min(1).max(10),
+};
+
+/** Legacy caches may omit musicSuggestions; live planner output may not. */
+export const ReelPlanSchema = z.object({
+  ...ReelPlanShape,
+  musicSuggestions: MusicSuggestionsSchema.optional(),
 }).strict();
 export type ReelPlan = z.infer<typeof ReelPlanSchema>;
+
+export const NewReelPlanSchema = z.object({
+  ...ReelPlanShape,
+  musicSuggestions: MusicSuggestionsSchema,
+}).strict();
+export type NewReelPlan = z.infer<typeof NewReelPlanSchema>;
 
 export const isDistinctDetailSet = (details: readonly PlannedDetail[]): boolean =>
   details.every((detail, index) => details.slice(index + 1).every((other) =>
     Math.hypot(detail.focalX - other.focalX, detail.focalY - other.focalY) >= DISTANCE_THRESHOLD,
   ));
 
-export const validateReelPlan = (input: unknown, eligibility: ReelEligibility, artworkCount = 1): ReelPlan => {
+export const validateReelPlan = (input: unknown, eligibility: ReelEligibility, artworkCount = 1, requireMusicSuggestions = false): ReelPlan => {
   const plan = ReelPlanSchema.parse(input);
   const template = getTemplate(plan.template);
   const errors: string[] = [];
@@ -79,6 +130,7 @@ export const validateReelPlan = (input: unknown, eligibility: ReelEligibility, a
   if (duration < template.minDuration - DURATION_TOLERANCE_SECONDS || duration > template.maxDuration + DURATION_TOLERANCE_SECONDS) {
     errors.push(`${plan.template} duration must be between ${template.minDuration} and ${template.maxDuration} seconds`);
   }
+  if (requireMusicSuggestions && !plan.musicSuggestions) errors.push("new Reel plans require exactly three valid music suggestions");
   if (errors.length > 0) throw new Error(errors.join("; "));
   return plan;
 };

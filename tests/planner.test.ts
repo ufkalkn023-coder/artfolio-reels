@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { compileSingleArtworkPlan } from "../src/planner/compiler";
 import { ArtworkHandoffSchema, TwoArtworkHandoffsSchema } from "../src/planner/handoff";
 import { assessEligibility } from "../src/planner/eligibility";
-import { ReelPlanSchema, validateReelPlan } from "../src/planner/reel-plan";
+import { NewReelPlanSchema, ReelPlanSchema, validateReelPlan } from "../src/planner/reel-plan";
 import { planArtwork } from "../src/planner/service";
 import { writeCachedPlan } from "../src/planner/cache";
 import { assessReelPlanAcceptance, PlanRejectionCode, PlanWarningCode } from "../src/planner/acceptance";
@@ -17,6 +17,7 @@ import { buildGeminiPlannerGenerationConfig, planWithGemini, summarizeGeminiApiE
 import { appendPlannerUsageTelemetry, createPlannerUsageTelemetry, mapGeminiUsageMetadata } from "../src/planner/telemetry";
 import { HOOK_TYPES, HookTypeSchema } from "../src/v2/schema";
 import { PlannerFailureCategory, classifyPlannerFailure } from "../src/planner/failure";
+import { formatRecentMusicContext } from "../src/planner/music-history";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -69,6 +70,8 @@ const geminiDetailsSchema = schemaArray(geminiResponseSchema.properties.details 
 const geminiDetailItemSchema = schemaObject(geminiDetailsSchema.items as { type?: string; properties?: Record<string, unknown>; required?: string[] }, "Gemini details.items");
 const geminiScenesSchema = schemaArray(geminiResponseSchema.properties.scenes as { type?: string; items?: unknown; minItems?: number; maxItems?: number }, "Gemini scenes");
 const geminiSceneItemSchema = schemaObject(geminiScenesSchema.items as { type?: string; properties?: Record<string, unknown>; required?: string[] }, "Gemini scenes.items");
+const geminiMusicSchema = schemaArray(geminiResponseSchema.properties.musicSuggestions as { type?: string; items?: unknown; minItems?: number; maxItems?: number }, "Gemini musicSuggestions");
+const geminiMusicItemSchema = schemaObject(geminiMusicSchema.items as { type?: string; properties?: Record<string, unknown>; required?: string[] }, "Gemini musicSuggestions.items");
 equal(HOOK_TYPES.join(","), ["VISUAL_DETAIL", "QUESTION", "OBSERVATION", "CONTRAST", "DISCOVERY"].join(","), "canonical hook type values are exact");
 equal(productionPrompt.includes(`Set hook.type to exactly one of these uppercase enum values: ${HOOK_TYPES.join(", ")}.`), true, "prompt exposes every allowed hook type exactly");
 equal(geminiHookTypeEnum.join(","), HOOK_TYPES.join(","), "Gemini structured contract exposes the canonical hook type values");
@@ -88,6 +91,9 @@ equal(Object.keys(geminiTargetRegionSchema.properties).join(","), ["x", "y", "wi
 equal(geminiTargetRegionSchema.required.join(","), ["x", "y", "width", "height"].join(","), "Gemini target region requires complete bounds");
 equal(geminiScenesSchema.minItems, 1, "Gemini scenes contract forbids an empty scene list");
 equal(geminiScenesSchema.maxItems, undefined, "Gemini scenes contract omits the local maximum scene count");
+equal(geminiResponseSchema.required.includes("musicSuggestions"), true, "Gemini response requires music suggestions in the same planner response");
+equal(geminiMusicSchema.minItems, 3, "Gemini music contract requires at least three items provider-side");
+equal(Object.keys(geminiMusicItemSchema.properties).join(","), ["artist", "title", "role", "reason"].join(","), "Gemini music items expose structured fields");
 equal(Object.keys(geminiSceneItemSchema.properties).join(","), ["id", "kind", "seconds", "detailId", "observationIndex", "camera"].join(","), "Gemini scenes contract contains every local scene property");
 equal(geminiSceneItemSchema.required.join(","), ["id", "kind", "seconds"].join(","), "Gemini scenes contract requires the local required scene fields");
 const geminiCameraSchema = schemaObject(geminiSceneItemSchema.properties.camera as { type?: string; properties?: Record<string, unknown>; required?: string[] }, "Gemini scene camera");
@@ -103,6 +109,8 @@ truthy(productionPrompt.includes("every observation scene must reference"), "pro
 truthy(productionPrompt.includes("planned detail observations must directly answer the question"), "question hooks must be answerable by planned observations");
 truthy(productionPrompt.includes("rewrite the hook to match them"), "unaligned hooks must be rewritten");
 truthy(productionPrompt.includes("Use \"Why...?\" only when"), "unsupported causal why questions are avoided");
+truthy(productionPrompt.includes("Return exactly three distinct, identifiable, searchable"), "prompt requires artwork-specific music choices");
+truthy(productionPrompt.includes("Recent tracks are a strong exclusion"), "prompt strongly excludes recent tracks");
 
 equal(ArtworkHandoffSchema.safeParse(STARRY_NIGHT_HANDOFF).success, true, "confirmed handoff is accepted");
 equal(ArtworkHandoffSchema.safeParse({ ...STARRY_NIGHT_HANDOFF, canonicalId: "" }).success, false, "missing canonicalId is rejected");
@@ -113,6 +121,17 @@ equal(TwoArtworkHandoffsSchema.safeParse([STARRY_NIGHT_HANDOFF, STARRY_NIGHT_HAN
 
 const validPlan = validateReelPlan(STARRY_NIGHT_MOCK_PLAN, eligibility);
 equal(validPlan.template, "why-this-works", "valid structured planner output is accepted");
+equal(NewReelPlanSchema.safeParse(STARRY_NIGHT_MOCK_PLAN).success, true, "new planner output accepts exactly three valid music suggestions");
+equal(NewReelPlanSchema.safeParse({ ...STARRY_NIGHT_MOCK_PLAN, musicSuggestions: undefined }).success, false, "new planner output requires music suggestions");
+equal(NewReelPlanSchema.safeParse({ ...STARRY_NIGHT_MOCK_PLAN, musicSuggestions: STARRY_NIGHT_MOCK_PLAN.musicSuggestions?.slice(0, 2) }).success, false, "new planner output rejects fewer than three suggestions");
+const duplicateMusic = structuredClone(STARRY_NIGHT_MOCK_PLAN.musicSuggestions!);
+duplicateMusic[1] = { ...duplicateMusic[1], artist: `  ${duplicateMusic[0].artist.toUpperCase()} `, title: `${duplicateMusic[0].title}!!!` };
+equal(NewReelPlanSchema.safeParse({ ...STARRY_NIGHT_MOCK_PLAN, musicSuggestions: duplicateMusic }).success, false, "normalized duplicate tracks are rejected within one plan");
+equal(ReelPlanSchema.safeParse({ ...STARRY_NIGHT_MOCK_PLAN, musicSuggestions: undefined }).success, true, "legacy plans without music remain schema-compatible");
+const recentContext = { tracks: [{ artist: "Claude Debussy", title: "Nuages" }], frequentArtists: ["Claude Debussy"] };
+const recentPrompt = buildGeminiPlannerPrompt(STARRY_NIGHT_HANDOFF, eligibility, recentContext);
+truthy(recentPrompt.includes("Claude Debussy — Nuages"), "recent music suggestions are passed to the planner prompt");
+truthy(formatRecentMusicContext(recentContext).length < 1_000, "recent exclusion context remains compact");
 for (const hookType of HOOK_TYPES) {
   equal(HookTypeSchema.safeParse(hookType).success, true, `${hookType} is an allowed hook type`);
   equal(ReelPlanSchema.safeParse({ ...STARRY_NIGHT_MOCK_PLAN, hook: { ...STARRY_NIGHT_MOCK_PLAN.hook, type: hookType } }).success, true, `${hookType} passes ReelPlan validation`);
@@ -274,6 +293,26 @@ const verifyAsyncPlannerBehavior = async (): Promise<void> => {
   equal(calls, 1, "valid cached plan does not call Gemini planner");
   await planArtwork(STARRY_NIGHT_HANDOFF, { cacheDirectory, force: true, callPlanner: testPlanner });
   equal(calls, 2, "force regeneration calls planner once");
+
+  const legacyCacheDirectory = await mkdtemp(join(tmpdir(), "artfolio-planner-legacy-cache-"));
+  const legacyPlan = structuredClone(STARRY_NIGHT_MOCK_PLAN);
+  delete legacyPlan.musicSuggestions;
+  await writeCachedPlan(legacyCacheDirectory, STARRY_NIGHT_HANDOFF, legacyPlan);
+  let legacyPlannerCalls = 0;
+  const legacyCached = await planArtwork(STARRY_NIGHT_HANDOFF, {
+    cacheDirectory: legacyCacheDirectory,
+    callPlanner: async () => { legacyPlannerCalls += 1; return STARRY_NIGHT_MOCK_PLAN; },
+  });
+  equal(legacyCached.cacheHit, true, "legacy cached plan without music loads safely");
+  equal(legacyCached.plan.musicSuggestions, undefined, "legacy cached plan does not manufacture fallback music");
+  equal(legacyPlannerCalls, 0, "legacy cache does not force a new Gemini call");
+
+  const recentDuplicateCache = await mkdtemp(join(tmpdir(), "artfolio-planner-music-repeat-"));
+  await rejects(() => planArtwork(STARRY_NIGHT_HANDOFF, {
+    cacheDirectory: recentDuplicateCache,
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
+    recentMusic: { tracks: [{ artist: "claude debussy", title: "NUAGES" }], frequentArtists: [] },
+  }), "new plan reusing a normalized recent track");
 
   const telemetryCacheDirectory = await mkdtemp(join(tmpdir(), "artfolio-planner-telemetry-cache-"));
   let telemetryCalls = 0;

@@ -4,10 +4,12 @@ import { planWithGemini } from "./gemini";
 import { artifactIdFor, runHandoffPipeline, type HandoffPipelineResult } from "./pipeline";
 import { type PlannerCall } from "./service";
 import { type CompileResult } from "./compiler";
-import { type ArtworkHandoff } from "./handoff";
+import { ArtworkHandoffSchema, type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
 import { resolveRenderOutputPath } from "./render-path";
 import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
+import { recentMusicContextFromProductionHistory, recordProductionHistory, type ReelProductionHistory } from "./production-history";
+import { PLANNER_VERSION } from "./config";
 
 export type ExistingCommand = (name: "qc" | "render", reelId: string) => void;
 
@@ -21,6 +23,10 @@ export type ReelIntegrationOptions = {
   reelDirectory?: string;
   outputDirectory?: string;
   writeSocialCopy?: SocialCopyWriter;
+  productionHistory?: ReelProductionHistory;
+  productionHistoryPath?: string;
+  batchId?: string;
+  now?: () => Date;
 };
 
 const runExistingCommand: ExistingCommand = (name, reelId) => {
@@ -40,12 +46,14 @@ export const runReelIntegration = async (
   options: ReelIntegrationOptions = {},
 ): Promise<ReelIntegrationResult> => {
   const outputDirectory = options.outputDirectory ?? resolve("output");
-  const result = await runHandoffPipeline(rawHandoff, {
+  const handoff = ArtworkHandoffSchema.parse(rawHandoff);
+  const result = await runHandoffPipeline(handoff, {
     cacheDirectory: options.cacheDirectory ?? resolve("data/plans"),
     reelDirectory: options.reelDirectory ?? resolve("data/reels"),
     forcePlan: options.forcePlan,
     callPlanner: options.callPlanner ?? planWithGemini,
     compile: options.compile,
+    recentMusic: options.productionHistory ? recentMusicContextFromProductionHistory(options.productionHistory, undefined, handoff.canonicalId) : undefined,
   });
   const reelId = artifactIdFor(result.handoff.canonicalId);
   (options.runExistingCommand ?? runExistingCommand)("qc", reelId);
@@ -53,6 +61,22 @@ export const runReelIntegration = async (
   if (options.render) {
     (options.runExistingCommand ?? runExistingCommand)("render", reelId);
     socialPath = await (options.writeSocialCopy ?? writeSocialCopy)(result.handoff, result.plan, outputDirectory);
+  }
+  if (options.productionHistory && options.productionHistoryPath && options.batchId) {
+    await recordProductionHistory(options.productionHistoryPath, options.productionHistory, {
+      canonicalId: result.handoff.canonicalId,
+      artist: result.handoff.artist,
+      museum: result.handoff.museum,
+      source: result.handoff.source,
+      template: result.plan.template,
+      plannerVersion: PLANNER_VERSION,
+      batchId: options.batchId,
+      status: options.render ? "RENDERED" : "QC_PASSED",
+      completedAt: (options.now ?? (() => new Date()))().toISOString(),
+      duration: result.plan.scenes.reduce((total, scene) => total + scene.seconds, 0),
+      ...(options.render ? { renderPath: resolveRenderOutputPath(result.reel.artworks[0].id, result.reel.artworks[0].title, outputDirectory) } : {}),
+      musicSuggestions: result.plan.musicSuggestions,
+    });
   }
   return {
     ...result,

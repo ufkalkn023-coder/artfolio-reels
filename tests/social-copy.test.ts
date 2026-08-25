@@ -44,6 +44,15 @@ const run = async (): Promise<void> => {
   );
   truthy(!questionHookCta.includes("?"), "question hook does not receive a second question");
 
+  const musicCopy = createSocialCopy(STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN);
+  equal(musicCopy.musicSuggestions.length, 3, "structured social copy retains exactly three music suggestions");
+  truthy(!musicCopy.text.includes("MUSIC SUGGESTIONS"), "canonical caption field excludes music metadata");
+  truthy(musicCopy.outputText.startsWith(musicCopy.text), "human-readable social output preserves the canonical caption verbatim");
+  truthy(musicCopy.outputText.includes("MUSIC SUGGESTIONS\n-----------------"), "human-readable social output appends a separate music section");
+  truthy(musicCopy.outputText.includes("Best fit —") && musicCopy.outputText.includes("Alternative —") && musicCopy.outputText.includes("Cinematic —"), "music output labels all three structural roles");
+  const legacyMusicCopy = createSocialCopy(STARRY_NIGHT_HANDOFF, { ...structuredClone(STARRY_NIGHT_MOCK_PLAN), musicSuggestions: undefined });
+  equal(legacyMusicCopy.outputText, legacyMusicCopy.text, "legacy plan writes its caption without arbitrary fallback songs");
+
   const duplicatePlan: ReelPlan = {
     ...structuredClone(STARRY_NIGHT_MOCK_PLAN),
     hook: { ...STARRY_NIGHT_MOCK_PLAN.hook, text: "The same phrase!" },
@@ -182,6 +191,7 @@ const run = async (): Promise<void> => {
   });
   const successPath = resolveSocialOutputPath(successful.handoff.canonicalId, successful.handoff.title, outputDirectory);
   truthy((await readFile(successPath, "utf8")).includes(STARRY_NIGHT_MOCK_PLAN.hook.text), "successful batch render creates ready-to-paste social copy");
+  truthy((await readFile(successPath, "utf8")).includes("MUSIC SUGGESTIONS\n-----------------"), "successful batch render includes the separate music section");
   await missing(resolveSocialOutputPath(renderFailed.handoff.canonicalId, renderFailed.handoff.title, outputDirectory), "render failure creates no social copy");
   await missing(resolveSocialOutputPath(qcFailed.handoff.canonicalId, qcFailed.handoff.title, outputDirectory), "QC failure creates no social copy");
   await missing(resolveSocialOutputPath(rejected.handoff.canonicalId, rejected.handoff.title, outputDirectory), "rejected plan creates no social copy");

@@ -3,7 +3,7 @@ import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { type ArtworkHandoff } from "../planner/handoff";
 import { renderFilenameForArtwork } from "../planner/render-path";
-import { type ReelPlan } from "../planner/reel-plan";
+import { type MusicSuggestion, type ReelPlan } from "../planner/reel-plan";
 
 export const SOCIAL_COPY_QUESTION_CTAS = [
   "Which detail did you notice first?",
@@ -32,7 +32,11 @@ export type SocialCopy = {
   museum: string;
   cta: SocialCopyCta;
   hashtags: string[];
+  musicSuggestions: MusicSuggestion[];
+  /** Canonical caption only; music is intentionally excluded. */
   text: string;
+  /** Human-readable output/social file containing caption and optional music metadata. */
+  outputText: string;
 };
 
 export type SocialCopyWriter = (
@@ -193,6 +197,15 @@ export const createSocialCopy = (artwork: ArtworkHandoff, plan: ReelPlan): Socia
     hashtags.join(" "),
   ].filter((section): section is string => Boolean(section));
 
+  const text = `${sections.join("\n\n")}\n`;
+  const musicSuggestions = plan.musicSuggestions ? [...plan.musicSuggestions] : [];
+  const musicSection = musicSuggestions.length === 3
+    ? `\nMUSIC SUGGESTIONS\n-----------------\n\n${musicSuggestions.map((suggestion, index) => {
+      const role = suggestion.role === "best_fit" ? "Best fit" : suggestion.role === "alternative" ? "Alternative" : "Cinematic";
+      return `${index + 1}. ${suggestion.artist} — ${suggestion.title}\n   ${role} — ${suggestion.reason}`;
+    }).join("\n\n")}\n`
+    : "";
+
   return {
     hook: plan.hook.text,
     observations,
@@ -201,7 +214,9 @@ export const createSocialCopy = (artwork: ArtworkHandoff, plan: ReelPlan): Socia
     museum: artwork.museum,
     cta,
     hashtags,
-    text: `${sections.join("\n\n")}\n`,
+    musicSuggestions,
+    text,
+    outputText: `${text}${musicSection}`,
   };
 };
 
@@ -223,7 +238,7 @@ export const writeSocialCopy: SocialCopyWriter = async (artwork, plan, outputDir
   await mkdir(dirname(destination), { recursive: true });
   const temporaryPath = `${destination}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporaryPath, createSocialCopy(artwork, plan).text, "utf8");
+    await writeFile(temporaryPath, createSocialCopy(artwork, plan).outputText, "utf8");
     await rename(temporaryPath, destination);
   } finally {
     await unlink(temporaryPath).catch(() => undefined);
