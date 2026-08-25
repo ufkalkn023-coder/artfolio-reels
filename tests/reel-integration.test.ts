@@ -1,10 +1,11 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeCachedPlan } from "../src/planner/cache";
 import { runReelIntegration } from "../src/planner/integration";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
 import { resolveRenderOutputPath } from "../src/planner/render-path";
+import { resolveSocialOutputPath } from "../src/social/social-copy";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -72,6 +73,8 @@ const run = async (): Promise<void> => {
   equal(renderCalls, 0, "rendering a cached plan does not invoke planner");
   equal(commands.map(([name]) => name).join(","), "qc,render", "render follows successful QC");
   equal(rendered.renderPath, resolveRenderOutputPath(handoff.canonicalId, handoff.title, outputDirectory), "integration reports the actual title-based render path");
+  equal(rendered.socialPath, resolveSocialOutputPath(handoff.canonicalId, handoff.title, outputDirectory), "integration reports the matching social-copy path");
+  truthy((await readFile(rendered.socialPath!, "utf8")).includes(STARRY_NIGHT_MOCK_PLAN.centralIdea), "successful single-Reel render writes social copy from the accepted plan");
 
   let invalidCalls = 0;
   await rejects(() => runReelIntegration({ ...handoff, title: "" }, {

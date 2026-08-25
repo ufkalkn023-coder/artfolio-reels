@@ -8,9 +8,11 @@ import { planArtwork, type PlannerCall } from "./service";
 import { type ReelEligibility } from "./eligibility";
 import { type PlannerUsageTelemetry } from "./telemetry";
 import { assessReelPlanAcceptance, ReelPlanAcceptanceError, type ReelPlanAcceptance } from "./acceptance";
+import { type ReelPlan } from "./reel-plan";
 
 export type HandoffPipelineResult = CompileResult & {
   handoff: ArtworkHandoff;
+  plan: ReelPlan;
   cacheHit: boolean;
   reelPath: string;
   telemetry?: PlannerUsageTelemetry;
@@ -63,5 +65,5 @@ export const runHandoffPipeline = async (
   const compiled = (options.compile ?? compileSingleArtworkPlan)(localized.artwork, planned.plan, planned.eligibility);
   const reelPath = join(options.reelDirectory, `${artifactIdFor(handoff.canonicalId)}.json`);
   await writeReelArtifact(reelPath, compiled.reel);
-  return { ...compiled, handoff, cacheHit: planned.cacheHit, reelPath, telemetry: planned.telemetry, acceptance };
+  return { ...compiled, handoff, plan: planned.plan, cacheHit: planned.cacheHit, reelPath, telemetry: planned.telemetry, acceptance };
 };

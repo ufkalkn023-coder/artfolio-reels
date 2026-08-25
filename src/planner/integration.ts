@@ -7,6 +7,7 @@ import { type CompileResult } from "./compiler";
 import { type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
 import { resolveRenderOutputPath } from "./render-path";
+import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
 
 export type ExistingCommand = (name: "qc" | "render", reelId: string) => void;
 
@@ -19,6 +20,7 @@ export type ReelIntegrationOptions = {
   cacheDirectory?: string;
   reelDirectory?: string;
   outputDirectory?: string;
+  writeSocialCopy?: SocialCopyWriter;
 };
 
 const runExistingCommand: ExistingCommand = (name, reelId) => {
@@ -29,6 +31,7 @@ const runExistingCommand: ExistingCommand = (name, reelId) => {
 export type ReelIntegrationResult = HandoffPipelineResult & {
   qcDirectory: string;
   renderPath?: string;
+  socialPath?: string;
 };
 
 /** Run the existing cached-planning pipeline and existing QC/render CLIs in order. */
@@ -46,10 +49,15 @@ export const runReelIntegration = async (
   });
   const reelId = artifactIdFor(result.handoff.canonicalId);
   (options.runExistingCommand ?? runExistingCommand)("qc", reelId);
-  if (options.render) (options.runExistingCommand ?? runExistingCommand)("render", reelId);
+  let socialPath: string | undefined;
+  if (options.render) {
+    (options.runExistingCommand ?? runExistingCommand)("render", reelId);
+    socialPath = await (options.writeSocialCopy ?? writeSocialCopy)(result.handoff, result.plan, outputDirectory);
+  }
   return {
     ...result,
     qcDirectory: resolve(outputDirectory, "qc", reelId),
     ...(options.render ? { renderPath: resolveRenderOutputPath(result.reel.artworks[0].id, result.reel.artworks[0].title, outputDirectory) } : {}),
+    ...(socialPath ? { socialPath } : {}),
   };
 };

@@ -14,6 +14,7 @@ import { PLANNER_VERSION } from "./config";
 import { recordProductionHistory, type ProductionHistoryStatus, type ReelProductionHistory } from "./production-history";
 import { resolveRenderOutputPath } from "./render-path";
 import { PlannerFailureCategory, classifyPlannerFailure, type PlannerFailureCategory as PlannerFailureCategoryValue } from "./failure";
+import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
 
 export const REEL_BATCH_VERSION = "reel-batch-v1" as const;
 
@@ -64,9 +65,10 @@ export type BatchCandidateAttempt = {
   planPath?: string;
   qcPath?: string;
   renderPath?: string;
+  socialPath?: string;
   historyStatus?: ProductionHistoryStatus;
   plannerFailureCategory?: PlannerFailureCategoryValue;
-  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "RENDER_FAILED";
+  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED";
   errorMessageSafe?: string;
 };
 
@@ -123,6 +125,7 @@ export type RunReelBatchOptions = {
   productionHistory?: ReelProductionHistory;
   productionHistoryPath?: string;
   batchId?: string;
+  writeSocialCopy?: SocialCopyWriter;
 };
 
 const elapsed = (started: number): number => Math.round(performance.now() - started);
@@ -178,6 +181,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   const callPlanner = options.callPlanner ?? planWithGemini;
   const runCommand = options.runExistingCommand ?? defaultExistingCommand;
   const localize = options.localizeArtwork ?? localizeArtworkAsset;
+  const writeSocial = options.writeSocialCopy ?? writeSocialCopy;
   const telemetry = emptyTelemetry();
   const timings = { selectionDurationMs: 0, handoffDurationMs: 0, plannerDurationMs: 0, qcDurationMs: 0, renderDurationMs: 0, totalDurationMs: 0 };
   const attempts: BatchCandidateAttempt[] = [];
@@ -304,6 +308,12 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       timings.renderDurationMs += elapsed(renderStarted);
       attempt.renderStatus = "PASSED";
       renderedCount += 1;
+      try {
+        attempt.socialPath = await writeSocial(handoff, planned.plan, outputDirectory);
+      } catch (error) {
+        attempt.errorCode = "SOCIAL_COPY_FAILED";
+        attempt.errorMessageSafe = safeErrorMessage(error);
+      }
       await recordHistory(handoff, attempt, "RENDERED");
     } catch (error) {
       timings.renderDurationMs += elapsed(renderStarted);

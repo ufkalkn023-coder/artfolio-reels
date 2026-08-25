@@ -29,7 +29,7 @@
     "reel": "tsx scripts/reel.ts",
     "reels:batch": "tsx scripts/reels-batch.ts",
     "reels:history:bootstrap": "tsx scripts/bootstrap-reel-production-history.ts",
-    "test": "tsx tests/v2-engine.test.ts && tsx tests/planner.test.ts && tsx tests/plan-acceptance.test.ts && tsx tests/reel-integration.test.ts && tsx tests/asset-localization.test.ts && tsx tests/env-loading.test.ts && tsx tests/production-history.test.ts && tsx tests/reel-batch.test.ts && tsx tests/render-path.test.ts",
+    "test": "tsx tests/v2-engine.test.ts && tsx tests/planner.test.ts && tsx tests/plan-acceptance.test.ts && tsx tests/reel-integration.test.ts && tsx tests/asset-localization.test.ts && tsx tests/env-loading.test.ts && tsx tests/production-history.test.ts && tsx tests/reel-batch.test.ts && tsx tests/render-path.test.ts && tsx tests/social-copy.test.ts",
     "validate": "npm run typecheck && npm run test"
   },
   "sideEffects": false
