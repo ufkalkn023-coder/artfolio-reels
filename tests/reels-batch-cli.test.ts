@@ -21,6 +21,11 @@ const run = (): void => {
   const renderOptions = parseReelBatchCliArgs(["--", "--render"]);
   equal(renderOptions.render, true, "npm separator permits --render");
 
+  const forcePlanOptions = parseReelBatchCliArgs(["--", "--render", "--target", "1", "--force-plan"]);
+  equal(forcePlanOptions.forcePlan, true, "batch permits --force-plan");
+  equal(forcePlanOptions.render, true, "force-plan retains render");
+  equal(forcePlanOptions.target, "1", "force-plan retains target");
+
   const selectionOptions = parseReelBatchCliArgs(["--", "--selection-only"]);
   equal(selectionOptions.selectionOnly, true, "npm separator permits --selection-only");
 

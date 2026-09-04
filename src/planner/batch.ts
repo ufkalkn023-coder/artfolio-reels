@@ -121,6 +121,7 @@ export type RunReelBatchOptions = {
   reelDirectory?: string;
   outputDirectory?: string;
   callPlanner?: PlannerCall;
+  forcePlan?: boolean;
   runExistingCommand?: ExistingBatchCommand;
   now?: () => Date;
   localizeArtwork?: (artwork: ArtworkHandoff) => Promise<LocalizedArtworkAsset>;
@@ -249,6 +250,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       planned = await planArtwork(handoff, {
         cacheDirectory,
         callPlanner,
+        force: options.forcePlan,
         recentMusic: productionHistory ? recentMusicContextFromProductionHistory(productionHistory, undefined, handoff.canonicalId) : undefined,
       });
       attempt.plannerStatus = planned.cacheHit ? "CACHE" : "LIVE";

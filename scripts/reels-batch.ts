@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runReelBatch, writeBatchManifest, type BatchCandidateQueue } from "../src/planner/batch";
 import { loadReelProductionHistory, productionHistoryExcludedCanonicalIds } from "../src/planner/production-history";
+import { parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
+export { parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
 
 type AcquisitionSource = { source: string; attempted: number; accepted: number; rejected: number; failed: number; rejectionReasons: Record<string, number> };
 type AcquisitionManifest = {
@@ -22,48 +24,7 @@ type AcquisitionManifest = {
   sources: AcquisitionSource[];
 };
 
-const usage = "Usage: npm run reels:batch -- [--render] [--selection-only] [--target <n>] [--candidate-limit <n>]";
-
-export type ReelBatchCliOptions = {
-  render: boolean;
-  selectionOnly: boolean;
-  target?: string;
-  candidateLimit?: string;
-};
-
-export const parseReelBatchCliArgs = (rawArgs: string[]): ReelBatchCliOptions => {
-  const args = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs;
-  let render = false;
-  let selectionOnly = false;
-  let target: string | undefined;
-  let candidateLimit: string | undefined;
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--render") {
-      render = true;
-      continue;
-    }
-    if (arg === "--selection-only") {
-      selectionOnly = true;
-      continue;
-    }
-    if (arg === "--target" || arg === "--candidate-limit") {
-      const value = args[index + 1];
-      if (value === undefined || value.startsWith("--") || !/^\d+$/.test(value)) throw new Error(usage);
-      if (arg === "--target" && target === undefined) target = value;
-      if (arg === "--candidate-limit" && candidateLimit === undefined) candidateLimit = value;
-      index += 1;
-      continue;
-    }
-    throw new Error(usage);
-  }
-
-  if (render && selectionOnly) throw new Error(usage);
-  return { render, selectionOnly, target, candidateLimit };
-};
-
-const { render, selectionOnly, target, candidateLimit } = parseReelBatchCliArgs(process.argv.slice(2));
+const { render, forcePlan, selectionOnly, target, candidateLimit } = parseReelBatchCliArgs(process.argv.slice(2));
 
 const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
 const artBotRoot = resolve(process.env.ARTFOLIO_ART_BOT_ROOT ?? "../../instagram-art-bot-final");
@@ -131,7 +92,7 @@ const main = async (): Promise<void> => {
     console.info(`[reel-selection] target=${queue.target} candidates=${queue.candidateCount} ids=${queue.candidates.map((candidate) => candidate.canonicalId).join(",")}`);
     return;
   }
-  const manifest = await runReelBatch({ queue, render, productionHistory, productionHistoryPath: historyPath, batchId: runId });
+  const manifest = await runReelBatch({ queue, render, forcePlan, productionHistory, productionHistoryPath: historyPath, batchId: runId });
   manifest.timings.selectionDurationMs = Math.round(performance.now() - selectionStarted) - manifest.timings.totalDurationMs;
   const manifestPath = resolve("output/reel-batches", `${runId}.json`);
   await writeBatchManifest(manifestPath, manifest);

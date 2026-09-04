@@ -64,6 +64,15 @@ const run = async (): Promise<void> => {
   equal(cached.gemini.calls, 0, "cached plan uses zero Gemini calls");
   equal(cached.gemini.cacheHits, 1, "cached plan is counted");
 
+  let forcedPlannerCalls = 0;
+  const forced = await runReelBatch({
+    queue: queue([candidates[0]], 1), forcePlan: true, cacheDirectory: cachedRoot, reelDirectory: join(root, "reels-forced"), outputDirectory: join(root, "output-forced"),
+    callPlanner: async () => { forcedPlannerCalls += 1; return { plan: STARRY_NIGHT_MOCK_PLAN, telemetry }; }, localizeArtwork: localized, runExistingCommand: () => undefined,
+  });
+  equal(forced.gemini.calls, 1, "forced plan uses one Gemini call");
+  equal(forced.gemini.cacheHits, 0, "forced plan bypasses cache");
+  equal(forcedPlannerCalls, 1, "forced plan invokes planner once");
+
   const commands: string[] = [];
   const missingHandoff: BatchCandidate = {
     canonicalId: "batch-missing", handoffPath: join(root, "does-not-exist.json"), baseScore: 99, portfolioPriorityScore: 99,
