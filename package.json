@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit",
     "render:legacy": "remotion render ArtfolioReel output/artfolio-reel.mp4",
     "render": "tsx scripts/render-reel.ts",
+    "package": "tsx scripts/package-release.ts",
     "qc": "tsx scripts/qc.ts",
     "plan": "tsx scripts/plan.ts",
     "reel": "tsx scripts/reel.ts",

@@ -16,12 +16,16 @@ npm run reels:history:bootstrap -- met_853157 met_437311 met_436975 met_438159
 npm run dev
 npm run render -- starry-night
 npm run qc -- starry-night
+npm run package -- <reel-id>
+npm run package -- <reel-id> --overwrite
 npm run render -- why-this-works
 npm run qc -- why-this-works
 npm run render:legacy
 ```
 
 `render` writes H.264 MP4 files to `output/renders/` and refuses to overwrite an existing file unless `--overwrite` is passed. `qc` writes intro, middle, outro stills and a contact sheet to `output/qc/<template-id>/`. Add `--debug-targets` to QC only to overlay each selected detail's focal crosshair or target region, ID, and safe scale; this flag only writes stills and never appears in a normal MP4.
+
+`package` copies an already-rendered Reel, canonical caption, validated ReelData metadata, and QC contact sheet into `output/releases/<reel-id>/`. It never renders or generates visual artifacts. A package contains `reel.mp4`, `caption.txt`, `metadata.json`, `manifest.json`, and `qc/contact-sheet.png`; the manifest includes SHA-256 hashes. Existing releases are refused unless `--overwrite` is supplied. Covers are excluded because the golden baseline has no independent post-render cover artifact.
 
 `plan` validates a confirmed-rights artwork handoff, uses a cached plan from `data/plans/<canonical-id>.json` when available, and writes deterministic V2 `ReelData` to `data/reels/<canonical-id>.json`. It makes one Gemini call only on a cache miss; set `GEMINI_API_KEY`, optionally `GEMINI_MODEL`, and optionally `GEMINI_THINKING_LEVEL` (`low`, `medium`, or `high`; default `high`) for a live plan. New live responses append count-only usage and estimated cost telemetry to the ignored `data/telemetry/planner-usage.jsonl`; cached plans make zero Gemini calls and add no charge. Use the bundled networkless Starry Night fixture with `--mock`. Add `--force-plan` to bypass the cache.
 
