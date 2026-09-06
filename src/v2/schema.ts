@@ -110,11 +110,15 @@ export type SceneInput = z.infer<typeof SceneInputSchema>;
 
 const AudioTrackSchema = z.object({
   src: z.string().min(1),
+  // AFM identity is optional so older and non-AFM ReelData remains renderable.
+  trackId: z.string().regex(/^AFM-[A-Z]{2}\d{2}-\d{2}$/).optional(),
+  subfamily: z.string().regex(/^[A-Z]{2}\d{2}$/).optional(),
   volume: z.number().min(0).max(1).default(0.3),
   start: z.number().nonnegative().default(0),
+  durationSeconds: z.number().positive().optional(),
   fadeIn: z.number().nonnegative().optional(),
   fadeOut: z.number().nonnegative().optional(),
-});
+}).strict();
 
 export const ReelDataSchema = z.object({
   version: z.literal(2).default(2),

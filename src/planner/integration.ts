@@ -1,15 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { planWithGemini } from "./gemini";
-import { artifactIdFor, runHandoffPipeline, type HandoffPipelineResult } from "./pipeline";
+import { artifactIdFor, runHandoffPipeline, writeReelArtifact, type HandoffPipelineResult } from "./pipeline";
 import { type PlannerCall } from "./service";
 import { type CompileResult } from "./compiler";
 import { ArtworkHandoffSchema, type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
 import { resolveRenderOutputPath } from "./render-path";
 import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
-import { recentMusicContextFromProductionHistory, recordProductionHistory, type ReelProductionHistory } from "./production-history";
+import { emptyReelProductionHistory, recentMusicContextFromProductionHistory, recordProductionHistory, type ReelProductionHistory } from "./production-history";
 import { PLANNER_VERSION } from "./config";
+import { enrichCompletedReelWithAfm, type CompletedReelMusicEnricher } from "../music/enrichment";
 
 export type ExistingCommand = (name: "qc" | "render", reelId: string) => void;
 
@@ -27,6 +28,7 @@ export type ReelIntegrationOptions = {
   productionHistoryPath?: string;
   batchId?: string;
   now?: () => Date;
+  enrichMusic?: CompletedReelMusicEnricher;
 };
 
 const runExistingCommand: ExistingCommand = (name, reelId) => {
@@ -38,6 +40,8 @@ export type ReelIntegrationResult = HandoffPipelineResult & {
   qcDirectory: string;
   renderPath?: string;
   socialPath?: string;
+  musicTrackId?: string;
+  musicWarning?: string;
 };
 
 /** Run the existing cached-planning pipeline and existing QC/render CLIs in order. */
@@ -57,6 +61,15 @@ export const runReelIntegration = async (
   });
   const reelId = artifactIdFor(result.handoff.canonicalId);
   (options.runExistingCommand ?? runExistingCommand)("qc", reelId);
+  const music = await (options.enrichMusic ?? enrichCompletedReelWithAfm)(
+    result.reel,
+    options.productionHistory ?? emptyReelProductionHistory(),
+  );
+  if (music.warning) console.warn(`[afm] artwork=${reelId} warning=${music.warning}`);
+  if (music.selection) {
+    await writeReelArtifact(result.reelPath, music.reel);
+    console.info(`[afm] artwork=${reelId} track=${music.selection.track.id} subfamily=${music.selection.track.subfamilyCode} score=${music.selection.score.total}`);
+  }
   let socialPath: string | undefined;
   if (options.render) {
     (options.runExistingCommand ?? runExistingCommand)("render", reelId);
@@ -75,13 +88,17 @@ export const runReelIntegration = async (
       completedAt: (options.now ?? (() => new Date()))().toISOString(),
       duration: result.plan.scenes.reduce((total, scene) => total + scene.seconds, 0),
       ...(options.render ? { renderPath: resolveRenderOutputPath(result.reel.artworks[0].id, result.reel.artworks[0].title, outputDirectory) } : {}),
+      ...(music.selection ? { musicTrackId: music.selection.track.id, musicSubfamily: music.selection.track.subfamilyCode } : {}),
       musicSuggestions: result.plan.musicSuggestions,
     });
   }
   return {
     ...result,
+    reel: music.reel,
     qcDirectory: resolve(outputDirectory, "qc", reelId),
     ...(options.render ? { renderPath: resolveRenderOutputPath(result.reel.artworks[0].id, result.reel.artworks[0].title, outputDirectory) } : {}),
     ...(socialPath ? { socialPath } : {}),
+    ...(music.selection ? { musicTrackId: music.selection.track.id } : {}),
+    ...(music.warning ? { musicWarning: music.warning } : {}),
   };
 };

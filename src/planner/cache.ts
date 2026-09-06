@@ -16,6 +16,24 @@ const CachedPlanSchema = z.object({
 }).strict();
 export type CachedPlan = z.infer<typeof CachedPlanSchema>;
 export type CachedPlanRead = Pick<CachedPlan, "fallback"> & { plan: ReelPlan };
+export const PlanCacheStatus = {
+  HIT: "HIT",
+  MISS: "MISS",
+  INVALID: "INVALID",
+  SCHEMA_MISMATCH: "SCHEMA_MISMATCH",
+  IO_ERROR: "IO_ERROR",
+} as const;
+export type PlanCacheStatus = (typeof PlanCacheStatus)[keyof typeof PlanCacheStatus];
+export type CachedPlanReadResult =
+  | { status: typeof PlanCacheStatus.HIT; value: CachedPlanRead }
+  | { status: Exclude<PlanCacheStatus, typeof PlanCacheStatus.HIT>; path: string; reason?: string };
+
+export class PlanCacheReadError extends Error {
+  constructor(readonly status: Exclude<PlanCacheStatus, "HIT" | "MISS">, readonly path: string, reason?: string) {
+    super(`Plan cache ${status.toLowerCase()} at ${path}${reason ? `: ${reason}` : ""}`);
+    this.name = "PlanCacheReadError";
+  }
+}
 
 export const cacheKeyFor = (canonicalId: string): string => canonicalId.replace(/[^A-Za-z0-9_-]/g, "_");
 
@@ -25,14 +43,40 @@ export const readCachedPlan = async (
   directory: string,
   artwork: ArtworkHandoff,
   eligibility: ReelEligibility,
-): Promise<CachedPlanRead | undefined> => {
+): Promise<CachedPlanReadResult> => {
+  const path = planCachePath(directory, artwork.canonicalId);
+  let source: string;
   try {
-    const raw = JSON.parse(await readFile(planCachePath(directory, artwork.canonicalId), "utf8"));
-    const cached = CachedPlanSchema.parse(raw);
-    if (cached.canonicalArtworkId !== artwork.canonicalId) return undefined;
-    return { plan: validateReelPlan(cached.plan, eligibility, 1), fallback: cached.fallback };
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: PlanCacheStatus.MISS, path };
+    return { status: PlanCacheStatus.IO_ERROR, path, reason: (error as NodeJS.ErrnoException).code ?? "read failed" };
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(source) as unknown;
   } catch {
-    return undefined;
+    return { status: PlanCacheStatus.INVALID, path, reason: "malformed JSON" };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { status: PlanCacheStatus.INVALID, path, reason: "cache root must be an object" };
+  }
+  if ((raw as { plannerVersion?: unknown }).plannerVersion !== PLANNER_VERSION) {
+    return { status: PlanCacheStatus.SCHEMA_MISMATCH, path, reason: "planner version mismatch" };
+  }
+  const parsed = CachedPlanSchema.safeParse(raw);
+  if (!parsed.success) return { status: PlanCacheStatus.INVALID, path, reason: "cache schema validation failed" };
+  if (parsed.data.canonicalArtworkId !== artwork.canonicalId) {
+    return { status: PlanCacheStatus.SCHEMA_MISMATCH, path, reason: "canonical artwork ID mismatch" };
+  }
+  try {
+    return {
+      status: PlanCacheStatus.HIT,
+      value: { plan: validateReelPlan(parsed.data.plan, eligibility, 1), fallback: parsed.data.fallback },
+    };
+  } catch {
+    return { status: PlanCacheStatus.SCHEMA_MISMATCH, path, reason: "cached plan is incompatible with current validation" };
   }
 };
 

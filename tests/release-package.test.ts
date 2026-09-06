@@ -38,6 +38,7 @@ const createFixture = async (reelId = "release-fixture"): Promise<Fixture> => {
   reel.artworks[0].artist = "Fixture Artist";
   reel.artworks[0].date = "1901";
   reel.artworks[0].museum = "Fixture Museum";
+  reel.music = { src: "reel-audio/AFM-DE03-07.wav", trackId: "AFM-DE03-07", subfamily: "DE03", volume: 0.18, start: 0, durationSeconds: 120, fadeIn: 0.6, fadeOut: 1.5 };
   const paths = resolveReleasePaths({ reelId, outputDirectory, reelDirectory, artworkTitle: reel.artworks[0].title });
   await Promise.all([
     mkdir(reelDirectory, { recursive: true }),
@@ -82,6 +83,8 @@ const run = async (): Promise<void> => {
   equal(metadata.artist, sourceReel.artworks[0].artist, "metadata artwork fields come from ReelData");
   equal(metadata.artworkTitle, sourceReel.artworks[0].title, "metadata artwork title comes from ReelData");
   equal(metadata.hook, sourceReel.hook, "metadata hook comes from ReelData");
+  equal(metadata.musicTrackId, "AFM-DE03-07", "release metadata preserves selected AFM track identity");
+  equal(metadata.musicSubfamily, "DE03", "release metadata preserves AFM subfamily identity");
   equal(metadata.generatedAt, fixedDate.toISOString(), "metadata contains packaging time only");
   const expectedMetadata = createReleaseMetadata(structuredClone(getSampleReel("inside-the-painting")), "inside-the-painting", fixedDate.toISOString());
   truthy(expectedMetadata.durationSeconds > 0, "metadata helper derives duration from validated ReelData");

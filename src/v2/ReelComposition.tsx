@@ -10,11 +10,11 @@ import {
   ObservationScene,
 } from "./scenes";
 import { createScenePlan, resolveDetailSceneContent, resolveOverviewSceneSynthesis, shouldRenderDetailObservation } from "./timing";
-import { assertValidReelData } from "./templates";
 import { AudioSystem } from "./audio";
+import { validateRenderableReelData } from "./validation";
 
 export const ReelComposition: React.FC<{ reel: ReelData }> = ({ reel: rawReel }) => {
-  const reel = assertValidReelData(rawReel);
+  const reel = validateRenderableReelData(rawReel);
   const plan = createScenePlan(reel);
   let from = 0;
   return (

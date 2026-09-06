@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { getGeminiConfig, type GeminiThinkingLevel } from "./config";
 import { type ArtworkHandoff } from "./handoff";
@@ -9,6 +9,8 @@ import { appendPlannerUsageTelemetry, createPlannerUsageTelemetry } from "./tele
 import { type PlannerCallResult } from "./service";
 import { PlannerFailureCategory, PlannerFailureError } from "./failure";
 import { EMPTY_RECENT_MUSIC_CONTEXT, type RecentMusicContext } from "./music-history";
+import { sanitizeDiagnostic } from "../security/redaction";
+import { type PlannerUsageTelemetry } from "./telemetry";
 
 const mimeForPath = (filePath: string): string => ({ ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp" }[extname(filePath).toLowerCase()] ?? "image/jpeg");
 
@@ -78,20 +80,12 @@ type GoogleApiError = {
   };
 };
 
-const redactDiagnostic = (value: string): string => value
-  .replace(/(?:https?|wss?):\/\/[^\s'"<>]+/gi, "[redacted-url]")
-  .replace(/([?&](?:key|token|api[_-]?key)=)[^&\s]+/gi, "$1[redacted]")
-  .replace(/(\b(?:[A-Z][A-Z0-9_]*?(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)|api[_-]?key|token|secret|password)\b\s*(?:=|:)\s*)[^\s,;]+/gi, "$1[redacted]")
-  .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, "$1[redacted]")
-  .replace(/\s+/g, " ")
-  .trim();
-
 const stringValue = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value : undefined;
 
 const arrayValue = (value: unknown): unknown[] | undefined => Array.isArray(value) ? value : undefined;
 
 const keysForDiagnostic = (value: unknown): string => isRecord(value)
-  ? `[${Object.keys(value).sort().slice(0, 16).map((key) => redactDiagnostic(key).slice(0, 64)).join(",")}]`
+  ? `[${Object.keys(value).sort().slice(0, 16).map((key) => sanitizeDiagnostic(key, 64)).join(",")}]`
   : "[not-object]";
 
 /**
@@ -138,13 +132,40 @@ export const summarizeGeminiApiError = (statusCode: number, body: unknown): stri
   if (fieldViolations.length > 0) parts.push(fieldViolations.join("; "));
   if (message) parts.push(message);
   // Leave room for the stable "Gemini planner request failed (...)" wrapper.
-  return redactDiagnostic(parts.join(" — ")).slice(0, 440);
+  return sanitizeDiagnostic(parts.join(" — "), 440);
 };
 
-const parseGeminiErrorResponse = async (response: Response): Promise<unknown> => {
-  // Google error payloads are small. Limit parsing to avoid retaining an
-  // unexpected large provider response in diagnostics.
-  const body = (await response.text()).slice(0, 8_192);
+export class GeminiResponseSizeError extends Error {
+  constructor(readonly limitBytes: number) {
+    super(`Gemini response exceeds the ${limitBytes}-byte limit`);
+    this.name = "GeminiResponseSizeError";
+  }
+}
+
+export const readGeminiResponseText = async (response: Response, limitBytes: number): Promise<string> => {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > limitBytes) {
+    throw new GeminiResponseSizeError(limitBytes);
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > limitBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new GeminiResponseSizeError(limitBytes);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+};
+
+const parseGeminiErrorResponse = async (response: Response, limitBytes: number): Promise<unknown> => {
+  const body = (await readGeminiResponseText(response, limitBytes)).slice(0, 8_192);
   try {
     return JSON.parse(body) as unknown;
   } catch {
@@ -152,32 +173,70 @@ const parseGeminiErrorResponse = async (response: Response): Promise<unknown> =>
   }
 };
 
+export type GeminiPlannerDependencies = {
+  fetch?: typeof fetch;
+  readFile?: (path: string) => Promise<Buffer>;
+  stat?: (path: string) => Promise<{ size: number }>;
+  appendTelemetry?: (telemetry: PlannerUsageTelemetry) => Promise<void>;
+};
+
 /** Called only by the planning CLI after eligibility and cache checks; never imported by render/QC paths. */
 export const planWithGemini = async (
   artwork: ArtworkHandoff,
   eligibility: ReelEligibility,
   recentMusic: RecentMusicContext = EMPTY_RECENT_MUSIC_CONTEXT,
+  dependencies: GeminiPlannerDependencies = {},
 ): Promise<PlannerCallResult> => {
-  const { apiKey, model, thinkingLevel } = getGeminiConfig();
+  const { apiKey, model, thinkingLevel, timeoutMs, maxArtworkBytes, maxResponseBytes } = getGeminiConfig();
   if (!apiKey) throw new Error("GEMINI_API_KEY is required only when generating a new plan");
-  const imageBytes = await readFile(resolve(artwork.imagePath));
+  const artworkPath = resolve(artwork.imagePath);
+  const artworkStat = await (dependencies.stat ?? stat)(artworkPath);
+  if (artworkStat.size > maxArtworkBytes) {
+    throw new Error(`Artwork exceeds the ${maxArtworkBytes}-byte Gemini input limit`);
+  }
+  const imageBytes = await (dependencies.readFile ?? readFile)(artworkPath);
+  if (imageBytes.byteLength > maxArtworkBytes) {
+    throw new Error(`Artwork exceeds the ${maxArtworkBytes}-byte Gemini input limit`);
+  }
   const requestStartedAt = performance.now();
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [
-        { text: buildGeminiPlannerPrompt(artwork, eligibility, recentMusic) },
-        { inlineData: { mimeType: mimeForPath(artwork.imagePath), data: imageBytes.toString("base64") } },
-      ] }],
-      generationConfig: buildGeminiPlannerGenerationConfig(thinkingLevel),
-    }),
-  });
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const withTimeoutClassification = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (timeoutSignal.aborted || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))) {
+        throw new PlannerFailureError(PlannerFailureCategory.TIMEOUT, `Gemini planner request timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    }
+  };
+  let response: Response;
+  try {
+    response = await (dependencies.fetch ?? fetch)(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      signal: timeoutSignal,
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { text: buildGeminiPlannerPrompt(artwork, eligibility, recentMusic) },
+          { inlineData: { mimeType: mimeForPath(artwork.imagePath), data: imageBytes.toString("base64") } },
+        ] }],
+        generationConfig: buildGeminiPlannerGenerationConfig(thinkingLevel),
+      }),
+    });
+  } catch (error) {
+    if (timeoutSignal.aborted || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))) {
+      throw new PlannerFailureError(PlannerFailureCategory.TIMEOUT, `Gemini planner request timed out after ${timeoutMs}ms`);
+    }
+    throw new PlannerFailureError(PlannerFailureCategory.API_ERROR, "Gemini planner request failed (network error)");
+  }
   if (!response.ok) {
-    const reason = summarizeGeminiApiError(response.status, await parseGeminiErrorResponse(response));
+    const body = await withTimeoutClassification(() => parseGeminiErrorResponse(response, maxResponseBytes));
+    const reason = summarizeGeminiApiError(response.status, body);
     throw new PlannerFailureError(PlannerFailureCategory.API_ERROR, `Gemini planner request failed (${reason})`);
   }
-  const payload = await response.json() as {
+  const responseText = await withTimeoutClassification(() => readGeminiResponseText(response, maxResponseBytes));
+  const payload = JSON.parse(responseText) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     usageMetadata?: {
       promptTokenCount?: number;
@@ -193,7 +252,7 @@ export const planWithGemini = async (
     requestDurationMs: Math.round(performance.now() - requestStartedAt),
     usage: payload.usageMetadata,
   });
-  await appendPlannerUsageTelemetry(telemetry);
+  await (dependencies.appendTelemetry ?? appendPlannerUsageTelemetry)(telemetry);
   const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
   if (!text) throw new Error("Gemini planner returned no structured content");
   const parsed = JSON.parse(text) as unknown;

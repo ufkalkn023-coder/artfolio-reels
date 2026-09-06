@@ -24,6 +24,7 @@ const rejects = async (operation: () => Promise<unknown>, label: string): Promis
 
 const run = async (): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), "artfolio-reel-integration-"));
+  process.env.ARTFOLIO_AFM_ROOT = join(root, "missing-afm");
   const cacheDirectory = join(root, "plans");
   const reelDirectory = join(root, "reels");
   const outputDirectory = join(root, "output");
@@ -120,12 +121,15 @@ const run = async (): Promise<void> => {
   equal(compilerCommands, 0, "compiler failure does not invoke output commands");
 
   const failedCommands: string[] = [];
+  let musicCallsAfterFailedQc = 0;
   await rejects(() => runReelIntegration(handoff, {
     cacheDirectory, reelDirectory, outputDirectory, render: true,
     runExistingCommand: (name) => { failedCommands.push(name); if (name === "qc") throw new Error("QC failure"); },
+    enrichMusic: async (reel) => { musicCallsAfterFailedQc += 1; return { reel }; },
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
   }), "QC failure stops before render");
   equal(failedCommands.join(","), "qc", "QC failure does not invoke render");
+  equal(musicCallsAfterFailedQc, 0, "QC failure does not invoke music selection");
   truthy(cached.reelPath.endsWith("integration-starry-night.json"), "canonical ID determines reel output path");
   console.log("Reel integration tests passed");
 };

@@ -1,5 +1,6 @@
 import { CameraSchema, type ReelData, type SceneInput } from "../v2/schema";
-import { getTemplate, assertValidReelData } from "../v2/templates";
+import { getTemplate } from "../v2/templates";
+import { validateRenderableReelData } from "../v2/validation";
 import { type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
 import { type ReelPlan, validateReelPlan } from "./reel-plan";
@@ -83,5 +84,5 @@ export const compileSingleArtworkPlan = (
     textDensity: template.textDensity,
     endingMode: "outro",
   };
-  return { reel: assertValidReelData(reel), plan };
+  return { reel: validateRenderableReelData(reel), plan };
 };

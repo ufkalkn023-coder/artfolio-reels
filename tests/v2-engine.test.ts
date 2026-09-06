@@ -1,8 +1,9 @@
-import { getSafeTargetScale, getTargetHoldStartFrame, resolveArtworkFraming, resolveCameraState, resolveTargetCamera, targetNeedsTopText } from "../src/v2/camera";
+import { getSafeTargetScale, getTargetHoldStartFrame, resolveArtworkFraming, resolveCameraState, resolveTargetCamera, targetNeedsTopText, type ArtworkDimensions } from "../src/v2/camera";
 import { ReelDataSchema, type DetailPoint } from "../src/v2/schema";
 import { SAMPLE_REELS } from "../src/v2/samples";
 import { assertValidReelData, templateIds, validateTemplateRequirements } from "../src/v2/templates";
-import { createScenePlan, getDurationInFrames, resolveDetailSceneContent, resolveOverviewSceneSynthesis, shouldRenderDetailObservation, validateScenePlan } from "../src/v2/timing";
+import { createScenePlan, getDurationInFrames, resolveDetailSceneContent, resolveOverviewSceneSynthesis, shouldRenderDetailObservation } from "../src/v2/timing";
+import { validateScenePlan } from "../src/v2/validation";
 import { DESIGN, VIDEO } from "../src/v2/design";
 import { ArtworkDetailScene, MasterIntroScene, ObservationScene } from "../src/v2/scenes";
 import { getEditorialRevealProgress, getSafeEditorialFontSize } from "../src/v2/text";
@@ -13,8 +14,11 @@ const equal = (actual: unknown, expected: unknown, label: string): void => {
 const truthy = (value: unknown, label: string): void => {
   if (!value) throw new Error(label);
 };
+const close = (actual: number, expected: number, label: string): void => {
+  if (Math.abs(actual - expected) > 1e-9) throw new Error(`${label}: expected ${expected}, received ${actual}`);
+};
 
-type InspectableElement = { props: { children: InspectableElement[]; revealStartFrame?: number } };
+type InspectableElement = { props: { artwork?: ArtworkDimensions; children: InspectableElement[]; revealStartFrame?: number } };
 const sceneChildren = (scene: unknown): InspectableElement[] =>
   (scene as InspectableElement).props.children;
 
@@ -24,7 +28,7 @@ equal(new Set(templateIds).size, 6, "template IDs are unique");
 for (const [templateId, sample] of Object.entries(SAMPLE_REELS)) {
   const data = assertValidReelData(sample);
   const plan = createScenePlan(data);
-  equal(validateScenePlan(plan).length, 0, `${templateId} has a valid scene plan`);
+  equal(validateScenePlan(data, plan).length, 0, `${templateId} has a valid scene plan`);
   truthy(getDurationInFrames(data) > 0, `${templateId} has positive duration`);
   equal(plan.reduce((sum, scene) => sum + scene.durationInFrames, 0), getDurationInFrames(data), `${templateId} duration derives only from scene plan`);
   for (const [sceneIndex, scene] of plan.entries()) {
@@ -156,9 +160,23 @@ const introScene = sceneChildren(MasterIntroScene({
   hook: SAMPLE_REELS["look-closer"].hook,
   label: SAMPLE_REELS["look-closer"].label,
 }));
+equal(introScene[0].props.artwork, sceneArtwork, "intro passes the full artwork dimensions to ArtworkCamera");
 equal(introScene[2].props.revealStartFrame, undefined, "intro label retains the default immediate reveal");
 equal(introScene[3].props.revealStartFrame, undefined, "intro hook retains the default immediate reveal");
 truthy(getEditorialRevealProgress(1) > 0, "default editorial text reveal progresses immediately after frame zero");
+for (const [label, dimensions] of Object.entries<ArtworkDimensions>({
+  portrait: { imageWidth: 1200, imageHeight: 1800, orientation: "portrait" },
+  landscape: { imageWidth: 2400, imageHeight: 1200, orientation: "landscape" },
+  square: { imageWidth: 1600, imageHeight: 1600, orientation: "landscape" },
+  panorama: { imageWidth: 3200, imageHeight: 1000, orientation: "panorama" },
+})) {
+  const artwork = { ...sceneArtwork, ...dimensions };
+  const introCamera = sceneChildren(MasterIntroScene({ artwork, durationInFrames: 60, hook: "Look", label: "ARTFOLIO" }))[0];
+  const framing = resolveArtworkFraming(introCamera.props.artwork ?? {}, 1.04, 0.5, 0.32);
+  equal(framing.imageWidth, dimensions.imageWidth, `${label} intro uses actual width`);
+  equal(framing.imageHeight, dimensions.imageHeight, `${label} intro uses actual height`);
+  close(framing.renderedWidth / framing.renderedHeight, (dimensions.imageWidth ?? 1) / (dimensions.imageHeight ?? 1), `${label} intro preserves aspect ratio`);
+}
 const explicitTargetPlan = createScenePlan({ ...SAMPLE_REELS["look-closer"], scenes: [
   { id: "intro", kind: "intro", seconds: 2 },
   { id: "detail", kind: "detail", seconds: 3, detailId: "sky" },

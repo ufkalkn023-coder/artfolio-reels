@@ -15,6 +15,7 @@ const truthy = (value: unknown, label: string): void => { if (!value) throw new 
 
 const run = async (): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), "artfolio-reel-batch-"));
+  process.env.ARTFOLIO_AFM_ROOT = join(root, "missing-afm");
   const localized = async (artwork: typeof STARRY_NIGHT_HANDOFF) => ({ artwork, sourcePath: artwork.imagePath, destinationPath: artwork.imagePath, renderablePath: artwork.imagePath });
   const candidates: BatchCandidate[] = await Promise.all(Array.from({ length: 8 }, async (_, index) => {
     const canonicalId = `batch-${index + 1}`;
@@ -37,6 +38,8 @@ const run = async (): Promise<void> => {
   });
   equal(full.outcome, "COMPLETE", "four accepted candidates fill target");
   equal(full.qcPassedCount, 4, "all accepted candidates pass QC");
+  equal(full.completionBasis, "QC_PASSED", "QC-only completion is based on QC passes");
+  equal(full.completionCount, 4, "QC-only completion count is explicit");
   equal(plannerCalls, 4, "one live planner call per uncached candidate");
   equal(full.gemini.inputTokens, 40, "input telemetry aggregates");
   equal(full.gemini.outputTokens, 80, "output telemetry aggregates");
@@ -143,8 +146,29 @@ const run = async (): Promise<void> => {
   });
   equal(rendered.qcPassedCount, 2, "render failures do not alter QC completion");
   equal(rendered.renderedCount, 1, "rendered count remains independent");
+  equal(rendered.completionBasis, "RENDERED", "render mode completion is based on successful renders");
+  equal(rendered.completionCount, 1, "render shortfall reports successful render count");
+  equal(rendered.outcome, "SHORTFALL", "QC target cannot make a render-short batch complete");
   equal(rendered.candidates[0].errorCode, "RENDER_FAILED", "render failure is isolated");
   truthy(renders.includes("qc:batch-1") && renders.includes("qc:batch-2") && renders.includes("render:batch-2"), "only QC-passed candidates render");
+
+  const mixedRender = await runReelBatch({
+    queue: queue(candidates.slice(0, 3), 2, 3), render: true, cacheDirectory: join(root, "plans-mixed-render"), reelDirectory: join(root, "reels-mixed-render"), outputDirectory: join(root, "output-mixed-render"),
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
+    runExistingCommand: (name, reelId) => { if (name === "render" && reelId === "batch-1") throw new Error("render failure"); },
+  });
+  equal(mixedRender.qcPassedCount, 3, "render mode continues beyond the QC target after failure");
+  equal(mixedRender.renderedCount, 2, "mixed render batch reaches the requested render target");
+  equal(mixedRender.outcome, "COMPLETE", "render target completion is reported only after enough renders");
+
+  const zeroRender = await runReelBatch({
+    queue: queue(candidates.slice(0, 2), 1, 2), render: true, cacheDirectory: join(root, "plans-zero-render"), reelDirectory: join(root, "reels-zero-render"), outputDirectory: join(root, "output-zero-render"),
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
+    runExistingCommand: (name) => { if (name === "render") throw new Error("render failure"); },
+  });
+  equal(zeroRender.qcPassedCount, 2, "zero-render batch may still contain QC passes");
+  equal(zeroRender.renderedCount, 0, "zero successful renders are counted honestly");
+  equal(zeroRender.outcome, "SHORTFALL", "zero successful renders cannot complete render mode");
   truthy(!JSON.stringify(full).includes("GEMINI_API_KEY"), "batch manifest excludes secrets");
 
   const historyPath = join(root, "reel-production-history.json");

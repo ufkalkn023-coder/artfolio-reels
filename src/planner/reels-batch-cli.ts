@@ -8,6 +8,8 @@ export type ReelBatchCliOptions = {
   candidateLimit?: string;
 };
 
+export const exitCodeForBatchOutcome = (outcome: "COMPLETE" | "SHORTFALL"): 0 | 1 => outcome === "COMPLETE" ? 0 : 1;
+
 export const parseReelBatchCliArgs = (rawArgs: string[]): ReelBatchCliOptions => {
   const args = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs;
   let render = false;

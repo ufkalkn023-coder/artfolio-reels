@@ -27,6 +27,7 @@ const run = async (): Promise<void> => {
   equal(renderFilenameForArtwork("met_670765", "The Death of Cleopatra"), renderFilenameForArtwork("met_670765", "The Death of Cleopatra"), "filename is deterministic");
 
   const root = await mkdtemp(join(tmpdir(), "artfolio-render-path-"));
+  process.env.ARTFOLIO_AFM_ROOT = join(root, "missing-afm");
   const destination = resolveRenderOutputPath("met_670765", "The Death of Cleopatra", join(root, "output"));
   truthy(!relative(join(root, "output", "renders"), destination).startsWith(".."), "destination remains inside output/renders");
   await mkdir(join(root, "output", "renders"), { recursive: true });

@@ -16,6 +16,8 @@ import { resolveRenderOutputPath } from "./render-path";
 import { PlannerFailureCategory, classifyPlannerFailure, type PlannerFailureCategory as PlannerFailureCategoryValue } from "./failure";
 import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
 import { type MusicSuggestions } from "./reel-plan";
+import { enrichCompletedReelWithAfm, type CompletedReelMusicEnricher } from "../music/enrichment";
+import { sanitizeDiagnostic } from "../security/redaction";
 
 export const REEL_BATCH_VERSION = "reel-batch-v1" as const;
 
@@ -68,6 +70,9 @@ export type BatchCandidateAttempt = {
   renderPath?: string;
   socialPath?: string;
   musicSuggestions?: MusicSuggestions;
+  musicTrackId?: string;
+  musicSubfamily?: string;
+  musicWarning?: string;
   historyStatus?: ProductionHistoryStatus;
   plannerFailureCategory?: PlannerFailureCategoryValue;
   errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED";
@@ -95,6 +100,8 @@ export type ReelBatchManifest = {
   acceptedCount: number;
   qcPassedCount: number;
   renderedCount: number;
+  completionBasis: "QC_PASSED" | "RENDERED";
+  completionCount: number;
   historyLoadedCount: number;
   historyWrittenCount: number;
   rejectedCount: number;
@@ -129,18 +136,14 @@ export type RunReelBatchOptions = {
   productionHistoryPath?: string;
   batchId?: string;
   writeSocialCopy?: SocialCopyWriter;
+  enrichMusic?: CompletedReelMusicEnricher;
 };
 
 const elapsed = (started: number): number => Math.round(performance.now() - started);
 const durationFor = (plan: { scenes: Array<{ seconds: number }> }): number => plan.scenes.reduce((total, scene) => total + scene.seconds, 0);
 const safeErrorMessage = (error: unknown): string => {
   const message = error instanceof Error ? error.message : "Unknown error";
-  return message
-    .replace(/(?:https?|wss?):\/\/[^\s'"<>]+/gi, "[redacted-url]")
-    .replace(/([?&](?:key|token|api[_-]?key)=)[^&\s]+/gi, "$1[redacted]")
-    .replace(/(\b(?:[A-Z][A-Z0-9_]*?(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)|api[_-]?key|token|secret|password)\b\s*(?:=|:)\s*)[^\s,;]+/gi, "$1[redacted]")
-    .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, "$1[redacted]")
-    .slice(0, 300);
+  return sanitizeDiagnostic(message, 300);
 };
 const defaultExistingCommand: ExistingBatchCommand = (name, reelId) => {
   const result = spawnSync("npm", ["run", name, "--", reelId], { stdio: "inherit" });
@@ -192,6 +195,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   let acceptedCount = 0;
   let qcPassedCount = 0;
   let renderedCount = 0;
+  const completionCount = (): number => options.render ? renderedCount : qcPassedCount;
   let historyWrittenCount = 0;
   let productionHistory = options.productionHistory;
   const recordHistory = async (handoff: ArtworkHandoff, attempt: BatchCandidateAttempt, status: ProductionHistoryStatus): Promise<void> => {
@@ -201,6 +205,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       template: attempt.template, plannerVersion: PLANNER_VERSION, batchId: options.batchId, status,
       completedAt: (options.now ?? (() => new Date()))().toISOString(), duration: attempt.duration,
       warnings: attempt.acceptanceWarnings, ...(status === "RENDERED" ? { renderPath: attempt.renderPath } : {}),
+      ...(attempt.musicTrackId ? { musicTrackId: attempt.musicTrackId, musicSubfamily: attempt.musicSubfamily } : {}),
       musicSuggestions: attempt.musicSuggestions,
     });
     productionHistory = result.history;
@@ -210,7 +215,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   };
 
   for (const [index, candidate] of queue.candidates.slice(0, queue.candidateLimit).entries()) {
-    if (qcPassedCount >= queue.target) break;
+    if (completionCount() >= queue.target) break;
     const attempt: BatchCandidateAttempt = {
       queueOrder: index + 1, canonicalId: candidate.canonicalId, artist: candidate.artist, museum: candidate.museum,
       baseScore: candidate.baseScore, portfolioPriorityScore: candidate.portfolioPriorityScore,
@@ -306,6 +311,20 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       attempt.errorMessageSafe = safeErrorMessage(error);
       continue;
     }
+    const music = await (options.enrichMusic ?? enrichCompletedReelWithAfm)(
+      compiled.reel,
+      productionHistory ?? { version: "reel-production-history-v1", entries: [] },
+    );
+    if (music.warning) {
+      attempt.musicWarning = music.warning;
+      console.warn(`[afm] artwork=${handoff.canonicalId} warning=${music.warning}`);
+    }
+    if (music.selection) {
+      attempt.musicTrackId = music.selection.track.id;
+      attempt.musicSubfamily = music.selection.track.subfamilyCode;
+      await writeReelArtifact(attempt.planPath!, music.reel);
+      console.info(`[afm] artwork=${handoff.canonicalId} track=${attempt.musicTrackId} subfamily=${attempt.musicSubfamily} score=${music.selection.score.total}`);
+    }
     if (!options.render) {
       await recordHistory(handoff, attempt, "QC_PASSED");
       continue;
@@ -340,11 +359,14 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
     if (attempt.plannerFailureCategory) counts[attempt.plannerFailureCategory] = (counts[attempt.plannerFailureCategory] ?? 0) + 1;
     return counts;
   }, {});
-  const candidatesExhausted = qcPassedCount < queue.target && attempts.length >= Math.min(queue.candidateCount, queue.candidateLimit);
+  const finalCompletionCount = completionCount();
+  const completionBasis = options.render ? "RENDERED" : "QC_PASSED";
+  const candidatesExhausted = finalCompletionCount < queue.target && attempts.length >= Math.min(queue.candidateCount, queue.candidateLimit);
   return {
     batchVersion: REEL_BATCH_VERSION, startedAt, finishedAt: (options.now ?? (() => new Date()))().toISOString(),
     target: queue.target, candidateLimit: queue.candidateLimit, candidateCount: queue.candidateCount,
-    plannedCount, acceptedCount, qcPassedCount, renderedCount, historyLoadedCount: options.productionHistory?.entries.length ?? 0, historyWrittenCount, rejectedCount, failedCount, plannerFailureCounts, candidatesExhausted,
-    outcome: qcPassedCount === queue.target ? "COMPLETE" : "SHORTFALL", gemini: telemetry, timings, candidates: attempts,
+    plannedCount, acceptedCount, qcPassedCount, renderedCount, completionBasis, completionCount: finalCompletionCount,
+    historyLoadedCount: options.productionHistory?.entries.length ?? 0, historyWrittenCount, rejectedCount, failedCount, plannerFailureCounts, candidatesExhausted,
+    outcome: finalCompletionCount >= queue.target ? "COMPLETE" : "SHORTFALL", gemini: telemetry, timings, candidates: attempts,
   };
 };

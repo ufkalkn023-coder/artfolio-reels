@@ -33,6 +33,8 @@ export type ReleaseMetadata = {
   durationSeconds: number;
   hook: string;
   hookType?: string;
+  musicTrackId?: string;
+  musicSubfamily?: string;
   generatedAt: string;
 };
 
@@ -148,6 +150,8 @@ export const createReleaseMetadata = (reel: ReelData, reelId: string, generatedA
     durationSeconds: getDurationInFrames(reel) / VIDEO.fps,
     hook: reel.hook,
     ...(reel.hookType ? { hookType: reel.hookType } : {}),
+    ...(reel.music?.trackId ? { musicTrackId: reel.music.trackId } : {}),
+    ...(reel.music?.subfamily ? { musicSubfamily: reel.music.subfamily } : {}),
     generatedAt,
   };
 };

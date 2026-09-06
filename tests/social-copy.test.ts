@@ -152,6 +152,7 @@ const run = async (): Promise<void> => {
   );
 
   const root = await mkdtemp(join(tmpdir(), "artfolio-social-batch-"));
+  process.env.ARTFOLIO_AFM_ROOT = join(root, "missing-afm");
   const makeCandidate = async (canonicalId: string) => {
     const handoff = { ...STARRY_NIGHT_HANDOFF, canonicalId };
     const handoffPath = join(root, `${canonicalId}.json`);

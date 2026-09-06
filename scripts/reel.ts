@@ -24,7 +24,7 @@ const main = async (): Promise<void> => {
     batchId: `single-${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`,
   });
   console.info(`[reel] artwork=${result.handoff.canonicalId} cache=${result.cacheHit ? "hit" : "miss"} reel=${result.reelPath}`);
-  console.info(`[reel] qc=${result.qcDirectory}${result.renderPath ? ` render=${result.renderPath}` : ""}`);
+  console.info(`[reel] qc=${result.qcDirectory}${result.musicTrackId ? ` music=${result.musicTrackId}` : " music=unavailable"}${result.renderPath ? ` render=${result.renderPath}` : ""}`);
 };
 
 void main().catch((error: unknown) => {

@@ -3,8 +3,9 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runReelBatch, writeBatchManifest, type BatchCandidateQueue } from "../src/planner/batch";
 import { loadReelProductionHistory, productionHistoryExcludedCanonicalIds } from "../src/planner/production-history";
-import { parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
-export { parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
+import { exitCodeForBatchOutcome, parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
+import { buildArtBotSubprocessEnvironment, sanitizeSubprocessStderr } from "../src/planner/subprocess-security";
+export { exitCodeForBatchOutcome, parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
 
 type AcquisitionSource = { source: string; attempted: number; accepted: number; rejected: number; failed: number; rejectionReasons: Record<string, number> };
 type AcquisitionManifest = {
@@ -28,11 +29,10 @@ const { render, forcePlan, selectionOnly, target, candidateLimit } = parseReelBa
 
 const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
 const artBotRoot = resolve(process.env.ARTFOLIO_ART_BOT_ROOT ?? "../../instagram-art-bot-final");
-const artBotEnvironment = {
-  ...process.env,
-  ...(target ? { REEL_SELECTION_TARGET: target } : {}),
-  ...(candidateLimit ? { REEL_BATCH_CANDIDATE_LIMIT: candidateLimit } : {}),
-};
+const artBotEnvironment = buildArtBotSubprocessEnvironment(process.env, {
+  REEL_SELECTION_TARGET: target,
+  REEL_BATCH_CANDIDATE_LIMIT: candidateLimit,
+});
 const invokeCandidateAcquisition = async (excludedCanonicalIds: readonly string[]): Promise<AcquisitionManifest> => new Promise((resolveAcquisition, reject) => {
   const child = spawn("python3", ["-m", "src.reel_candidate_acquisition", ...excludedCanonicalIds.flatMap((canonicalId) => ["--excluded-canonical-id", canonicalId])], {
     cwd: artBotRoot, stdio: ["ignore", "pipe", "pipe"], env: artBotEnvironment,
@@ -43,7 +43,7 @@ const invokeCandidateAcquisition = async (excludedCanonicalIds: readonly string[
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   child.on("error", reject);
   child.on("close", (code) => {
-    if (code !== 0) return reject(new Error(`Art Bot acquisition failed${stderr ? `: ${stderr.trim()}` : ""}`));
+    if (code !== 0) return reject(new Error(`Art Bot acquisition failed${stderr ? `: ${sanitizeSubprocessStderr(stderr)}` : ""}`));
     try { resolveAcquisition(JSON.parse(stdout) as AcquisitionManifest); } catch { reject(new Error("Art Bot acquisition returned invalid JSON")); }
   });
 });
@@ -58,7 +58,7 @@ const invokeCandidateBoundary = async (historyPath: string): Promise<BatchCandid
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   child.on("error", reject);
   child.on("close", (code) => {
-    if (code !== 0) return reject(new Error(`Art Bot candidate boundary failed${stderr ? `: ${stderr.trim()}` : ""}`));
+    if (code !== 0) return reject(new Error(`Art Bot candidate boundary failed${stderr ? `: ${sanitizeSubprocessStderr(stderr)}` : ""}`));
     try { resolveQueue(JSON.parse(stdout) as BatchCandidateQueue); } catch { reject(new Error("Art Bot candidate boundary returned invalid JSON")); }
   });
 });
@@ -102,14 +102,15 @@ const main = async (): Promise<void> => {
     const result = attempt.plannerFailureCategory
       ? `reason=${attempt.plannerFailureCategory}`
       : attempt.errorCode ?? (attempt.acceptanceStatus === "REJECTED" ? attempt.acceptanceReasons[0] ?? "REJECTED" : `qc=${attempt.qcStatus.toLowerCase()}`);
-    console.info(`[${attempt.queueOrder}/${manifest.candidateCount}] ${attempt.canonicalId} plan=${plannerFailed ? "failed" : attempt.plannerStatus.toLowerCase()} accepted=${attempt.acceptanceStatus === "ACCEPTED"} ${result}`);
+    console.info(`[${attempt.queueOrder}/${manifest.candidateCount}] ${attempt.canonicalId} plan=${plannerFailed ? "failed" : attempt.plannerStatus.toLowerCase()} accepted=${attempt.acceptanceStatus === "ACCEPTED"} ${result}${attempt.musicTrackId ? ` music=${attempt.musicTrackId}` : ""}`);
   }
   console.info(`[reel-batch] planner_failures=${JSON.stringify(manifest.plannerFailureCounts)}`);
   const acquisitionRejections = Object.fromEntries(acquisitionSources.map((source) => [source.source, source.rejectionReasons]));
   console.info(`[reel-batch] acquisition_rejections=${JSON.stringify(acquisitionRejections)}`);
   console.info(`[reel-batch] ${manifest.outcome}`);
-  console.info(`target=${manifest.target} accepted=${manifest.acceptedCount} qc=${manifest.qcPassedCount} history_written=${manifest.historyWrittenCount} gemini_calls=${manifest.gemini.calls} cache_hits=${manifest.gemini.cacheHits} cost=$${manifest.gemini.estimatedCostUsd.toFixed(4)} time=${manifest.timings.totalDurationMs}ms`);
+  console.info(`target=${manifest.target} accepted=${manifest.acceptedCount} qc=${manifest.qcPassedCount} rendered=${manifest.renderedCount} completion=${manifest.completionBasis.toLowerCase()}:${manifest.completionCount} history_written=${manifest.historyWrittenCount} gemini_calls=${manifest.gemini.calls} cache_hits=${manifest.gemini.cacheHits} cost=$${manifest.gemini.estimatedCostUsd.toFixed(4)} time=${manifest.timings.totalDurationMs}ms`);
   console.info(`[reel-batch] manifest=${manifestPath}`);
+  process.exitCode = exitCodeForBatchOutcome(manifest.outcome);
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

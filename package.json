@@ -32,6 +32,7 @@
     "reel": "tsx scripts/reel.ts",
     "reels:batch": "tsx scripts/reels-batch.ts",
     "reels:history:bootstrap": "tsx scripts/bootstrap-reel-production-history.ts",
+    "music:analyze": "tsx scripts/music-analyze.ts",
     "test": "tsx scripts/run-tests.ts",
     "test:visual": "tsx scripts/test-visual.ts",
     "lint": "eslint --no-ignore src scripts tests eslint.config.mjs --ext .ts,.tsx,.js,.mjs",

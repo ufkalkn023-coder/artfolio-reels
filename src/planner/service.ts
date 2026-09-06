@@ -1,6 +1,6 @@
 import { type ArtworkHandoff } from "./handoff";
 import { assessEligibility, type ReelEligibility } from "./eligibility";
-import { readCachedPlan, writeCachedPlan } from "./cache";
+import { PlanCacheReadError, PlanCacheStatus, readCachedPlan, writeCachedPlan } from "./cache";
 import { type ReelPlan, validateReelPlan } from "./reel-plan";
 import { type PlannerUsageTelemetry } from "./telemetry";
 import { EMPTY_RECENT_MUSIC_CONTEXT, findRecentMusicDuplicates, type RecentMusicContext } from "./music-history";
@@ -26,7 +26,12 @@ export const planArtwork = async (artwork: ArtworkHandoff, options: PlanArtworkO
   if (!eligibility.eligible) throw new Error(`Artwork ${artwork.canonicalId} is not eligible: ${eligibility.reasons.join("; ")}`);
   if (!options.force) {
     const cached = await readCachedPlan(options.cacheDirectory, artwork, eligibility);
-    if (cached) return { plan: cached.plan, eligibility, cacheHit: true, fallback: cached.fallback };
+    if (cached.status === PlanCacheStatus.HIT) {
+      return { plan: cached.value.plan, eligibility, cacheHit: true, fallback: cached.value.fallback };
+    }
+    if (cached.status !== PlanCacheStatus.MISS) {
+      throw new PlanCacheReadError(cached.status, cached.path, cached.reason);
+    }
   }
   const recentMusic = options.recentMusic ?? EMPTY_RECENT_MUSIC_CONTEXT;
   const response = await options.callPlanner(artwork, eligibility, recentMusic);

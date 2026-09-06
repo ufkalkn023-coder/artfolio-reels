@@ -8,6 +8,7 @@ import {
   productionHistoryForPortfolio,
   recentMusicContextFromProductionHistory,
   recordProductionHistory,
+  ReelProductionHistorySchema,
   writeReelProductionHistory,
 } from "../src/planner/production-history";
 
@@ -34,10 +35,16 @@ const run = async (): Promise<void> => {
   const rerun = await recordProductionHistory(path, qc.history, { ...input, status: "QC_PASSED" });
   equal(rerun.history.entries.length, 1, "same production event is idempotent");
   equal(rerun.changed, false, "same QC production event does not rewrite history");
-  const rendered = await recordProductionHistory(path, rerun.history, {
+  const afmBackfill = await recordProductionHistory(path, rerun.history, {
+    ...input, status: "QC_PASSED", musicTrackId: "AFM-DE03-07", musicSubfamily: "DE03",
+  });
+  equal(afmBackfill.entry.musicTrackId, "AFM-DE03-07", "existing history entry can acquire AFM selection metadata");
+  equal(ReelProductionHistorySchema.safeParse({ ...afmBackfill.history, entries: [{ ...afmBackfill.entry, musicSubfamily: "AE01" }] }).success, false, "history rejects AFM subfamily mismatches");
+  const rendered = await recordProductionHistory(path, afmBackfill.history, {
     ...input, status: "RENDERED", completedAt: "2026-08-23T00:01:00.000Z", renderPath: "/safe/output/met_history.mp4",
   });
   equal(rendered.entry.status, "RENDERED", "successful render upgrades QC entry");
+  equal(rendered.entry.musicTrackId, "AFM-DE03-07", "render transition preserves selected AFM track");
   equal(rendered.transition, "QC_PASSED→RENDERED", "upgrade is explicit");
   const noDowngrade = await recordProductionHistory(path, rendered.history, { ...input, status: "QC_PASSED" });
   equal(noDowngrade.entry.status, "RENDERED", "rendered entry never downgrades");

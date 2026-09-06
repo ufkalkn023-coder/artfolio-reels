@@ -9,6 +9,9 @@ export const GEMINI_DEFAULT_MODEL = "gemini-3.7-flash";
 export const GEMINI_THINKING_LEVELS = ["low", "medium", "high"] as const;
 export type GeminiThinkingLevel = (typeof GEMINI_THINKING_LEVELS)[number];
 export const GEMINI_DEFAULT_THINKING_LEVEL: GeminiThinkingLevel = "high";
+export const GEMINI_DEFAULT_TIMEOUT_MS = 60_000;
+export const GEMINI_DEFAULT_MAX_ARTWORK_BYTES = 20 * 1024 * 1024;
+export const GEMINI_DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /** Load local development values without overriding process/CI environment variables. */
 export const loadMissingEnvironmentFrom = (path = resolve(process.cwd(), ".env.local")): void => {
@@ -31,8 +34,28 @@ export const getGeminiThinkingLevel = (): GeminiThinkingLevel => {
   throw new Error(`GEMINI_THINKING_LEVEL must be one of: ${GEMINI_THINKING_LEVELS.join(", ")}`);
 };
 
-export const getGeminiConfig = (): { apiKey: string | undefined; model: string; thinkingLevel: GeminiThinkingLevel } => ({
+const positiveIntegerEnvironment = (name: string, fallback: number, maximum: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new Error(`${name} must be a positive integer no greater than ${maximum}`);
+  }
+  return value;
+};
+
+export const getGeminiConfig = (): {
+  apiKey: string | undefined;
+  model: string;
+  thinkingLevel: GeminiThinkingLevel;
+  timeoutMs: number;
+  maxArtworkBytes: number;
+  maxResponseBytes: number;
+} => ({
   apiKey: process.env.GEMINI_API_KEY,
   model: process.env.GEMINI_MODEL?.trim() || GEMINI_DEFAULT_MODEL,
   thinkingLevel: getGeminiThinkingLevel(),
+  timeoutMs: positiveIntegerEnvironment("ARTFOLIO_GEMINI_TIMEOUT_MS", GEMINI_DEFAULT_TIMEOUT_MS, 5 * 60_000),
+  maxArtworkBytes: positiveIntegerEnvironment("ARTFOLIO_GEMINI_MAX_ARTWORK_BYTES", GEMINI_DEFAULT_MAX_ARTWORK_BYTES, 100 * 1024 * 1024),
+  maxResponseBytes: positiveIntegerEnvironment("ARTFOLIO_GEMINI_MAX_RESPONSE_BYTES", GEMINI_DEFAULT_MAX_RESPONSE_BYTES, 20 * 1024 * 1024),
 });

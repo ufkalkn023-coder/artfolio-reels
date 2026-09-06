@@ -21,7 +21,7 @@ const Label: React.FC<{ children: string; revealStartFrame?: number }> = ({ chil
 
 export const MasterIntroScene: React.FC<SceneBase & { hook: string; label: string }> = ({ artwork, durationInFrames, camera, hook, label }) => (
   <AbsoluteFill>
-    <ArtworkCamera src={artwork.src} durationInFrames={durationInFrames} camera={camera ?? { move: "zoom-in", focalX: 0.5, focalY: 0.32, startScale: 1.04, endScale: 1.1 }} />
+    <ArtworkCamera src={artwork.src} durationInFrames={durationInFrames} camera={camera ?? { move: "zoom-in", focalX: 0.5, focalY: 0.32, startScale: 1.04, endScale: 1.1 }} artwork={artwork} />
     <AbsoluteFill style={{ backgroundColor: "rgba(4, 10, 15, 0.2)" }} />
     <Label>{label}</Label>
     <EditorialText kind="hook" maxLines={3} maxWidth={760} style={{ bottom: DESIGN.safe.bottom + 70, left: DESIGN.safe.left, position: "absolute", textShadow: "0 3px 20px rgba(0,0,0,0.5)" }}>

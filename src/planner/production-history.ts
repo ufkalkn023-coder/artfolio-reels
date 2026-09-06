@@ -26,6 +26,8 @@ export const ReelProductionHistoryEntrySchema = z.object({
   renderPath: z.string().trim().min(1).max(1000).optional(),
   duration: z.number().positive().max(60).optional(),
   warnings: z.array(z.string().trim().min(1).max(160)).max(20).optional(),
+  musicTrackId: z.string().regex(/^AFM-[A-Z]{2}\d{2}-\d{2}$/).optional(),
+  musicSubfamily: z.string().regex(/^[A-Z]{2}\d{2}$/).optional(),
   musicSuggestions: MusicSuggestionsSchema.optional(),
 }).strict().superRefine((entry, context) => {
   if (entry.status === "RENDERED" && (!entry.renderedAt || !entry.renderPath)) {
@@ -33,6 +35,12 @@ export const ReelProductionHistoryEntrySchema = z.object({
   }
   if (entry.status === "QC_PASSED" && (entry.renderedAt || entry.renderPath)) {
     context.addIssue({ code: "custom", message: "QC_PASSED history entries cannot include render metadata" });
+  }
+  if (Boolean(entry.musicTrackId) !== Boolean(entry.musicSubfamily)) {
+    context.addIssue({ code: "custom", message: "AFM history identity requires both musicTrackId and musicSubfamily" });
+  }
+  if (entry.musicTrackId && entry.musicSubfamily && entry.musicTrackId.slice(4, 8) !== entry.musicSubfamily) {
+    context.addIssue({ code: "custom", message: "musicSubfamily must match musicTrackId" });
   }
 });
 export type ReelProductionHistoryEntry = z.infer<typeof ReelProductionHistoryEntrySchema>;
@@ -58,6 +66,8 @@ export type RecordProductionHistoryInput = Pick<ArtworkHandoff, "canonicalId" | 
   duration?: number;
   warnings?: string[];
   renderPath?: string;
+  musicTrackId?: string;
+  musicSubfamily?: string;
   musicSuggestions?: z.infer<typeof MusicSuggestionsSchema>;
 };
 
@@ -146,12 +156,19 @@ export const recordProductionHistory = async (
   const existingIndex = validatedHistory.entries.findIndex((entry) => entry.canonicalId === input.canonicalId);
   const existing = existingIndex === -1 ? undefined : validatedHistory.entries[existingIndex];
   const repeatedStatus = existing?.status === "RENDERED" || (existing?.status === "QC_PASSED" && input.status === "QC_PASSED");
-  const canBackfillMusic = Boolean(existing && !existing.musicSuggestions && input.musicSuggestions);
+  const canBackfillMusic = Boolean(existing && (
+    (!existing.musicSuggestions && input.musicSuggestions) ||
+    (!existing.musicTrackId && input.musicTrackId)
+  ));
   if (repeatedStatus && !canBackfillMusic) {
     return { history: validatedHistory, entry: existing, changed: false };
   }
-  if (existing && repeatedStatus && input.musicSuggestions) {
-    const entry = ReelProductionHistoryEntrySchema.parse({ ...existing, musicSuggestions: input.musicSuggestions });
+  if (existing && repeatedStatus && canBackfillMusic) {
+    const entry = ReelProductionHistoryEntrySchema.parse({
+      ...existing,
+      ...(input.musicSuggestions ? { musicSuggestions: input.musicSuggestions } : {}),
+      ...(input.musicTrackId ? { musicTrackId: input.musicTrackId, musicSubfamily: input.musicSubfamily } : {}),
+    });
     const entries = [...validatedHistory.entries];
     entries[existingIndex] = entry;
     const next = ReelProductionHistorySchema.parse({ version: REEL_PRODUCTION_HISTORY_VERSION, entries });
@@ -171,6 +188,7 @@ export const recordProductionHistory = async (
     ...(input.status === "RENDERED" ? { renderedAt: input.completedAt, renderPath: input.renderPath } : {}),
     ...(input.duration ? { duration: input.duration } : {}),
     ...(input.warnings?.length ? { warnings: input.warnings } : {}),
+    ...(input.musicTrackId ? { musicTrackId: input.musicTrackId, musicSubfamily: input.musicSubfamily } : existing?.musicTrackId ? { musicTrackId: existing.musicTrackId, musicSubfamily: existing.musicSubfamily } : {}),
     ...(input.musicSuggestions ? { musicSuggestions: input.musicSuggestions } : existing?.musicSuggestions ? { musicSuggestions: existing.musicSuggestions } : {}),
   });
   const entries = [...validatedHistory.entries];

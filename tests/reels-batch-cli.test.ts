@@ -1,4 +1,4 @@
-import { parseReelBatchCliArgs } from "../scripts/reels-batch";
+import { exitCodeForBatchOutcome, parseReelBatchCliArgs } from "../scripts/reels-batch";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -44,6 +44,8 @@ const run = (): void => {
   throwsUsage(["--target"], "missing target value fails");
   throwsUsage(["--candidate-limit"], "missing candidate limit value fails");
   throwsUsage(["--render", "--selection-only"], "conflicting mode flags fail");
+  equal(exitCodeForBatchOutcome("COMPLETE"), 0, "complete batches exit successfully");
+  equal(exitCodeForBatchOutcome("SHORTFALL"), 1, "shortfall batches return a failing exit status");
   console.log("Reel batch CLI tests passed");
 };
 

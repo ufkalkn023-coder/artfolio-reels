@@ -108,11 +108,3 @@ export const createScenePlan = (data: ReelData): PlannedScene[] => {
 
 export const getDurationInFrames = (data: ReelData): number =>
   createScenePlan(data).reduce((total, scene) => total + scene.durationInFrames, 0);
-
-export const validateScenePlan = (plan: PlannedScene[]): string[] => {
-  if (plan.length === 0) return ["scene plan must not be empty"];
-  if (plan.some((scene) => !Number.isInteger(scene.durationInFrames) || scene.durationInFrames <= 0)) {
-    return ["all scene durations must be positive whole frames"];
-  }
-  return [];
-};

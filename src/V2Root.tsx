@@ -4,6 +4,7 @@ import { ReelComposition } from "./v2/ReelComposition";
 import { SAMPLE_REELS } from "./v2/samples";
 import { getDurationInFrames } from "./v2/timing";
 import { type ReelData } from "./v2/schema";
+import { validateRenderableReelData } from "./v2/validation";
 
 const PlannedReel: React.FC<ReelData> = (reel) => <ReelComposition reel={reel} />;
 
@@ -25,7 +26,7 @@ export const ArtfolioV2Compositions: React.FC = () => (
       id="ArtfolioV2-PlannedReel"
       component={PlannedReel}
       defaultProps={SAMPLE_REELS["why-this-works"]}
-      calculateMetadata={({ props }) => ({ durationInFrames: getDurationInFrames(props) })}
+      calculateMetadata={({ props }) => ({ durationInFrames: getDurationInFrames(validateRenderableReelData(props)) })}
       fps={VIDEO.fps}
       width={VIDEO.width}
       height={VIDEO.height}
