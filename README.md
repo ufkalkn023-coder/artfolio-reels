@@ -12,6 +12,9 @@ npm run reel -- data/handoffs/starry-night.json --render
 npm run reels:batch
 npm run reels:batch -- --render
 npm run reels:batch -- --selection-only
+npm run reels:audit
+npm run --silent reels:audit -- --json
+npm run reels:audit -- --deep --reel <reel-id>
 npm run reels:history:bootstrap -- met_853157 met_437311 met_436975 met_438159
 npm run music:analyze -- --reel met_698749
 npm run dev
@@ -19,6 +22,8 @@ npm run render -- starry-night
 npm run qc -- starry-night
 npm run package -- <reel-id>
 npm run package -- <reel-id> --overwrite
+npm run reels:verify-release -- <release-path-or-id>
+npm run --silent reels:verify-release -- <release-path-or-id> --json
 npm run render -- why-this-works
 npm run qc -- why-this-works
 npm run render:legacy
@@ -27,6 +32,10 @@ npm run render:legacy
 `render` writes H.264 MP4 files to `output/renders/` and refuses to overwrite an existing file unless `--overwrite` is passed. `qc` writes intro, middle, outro stills and a contact sheet to `output/qc/<template-id>/`. Add `--debug-targets` to QC only to overlay each selected detail's focal crosshair or target region, ID, and safe scale; this flag only writes stills and never appears in a normal MP4.
 
 `package` copies an already-rendered Reel, canonical caption, validated ReelData metadata, and QC contact sheet into `output/releases/<reel-id>/`. It never renders or generates visual artifacts. A package contains `reel.mp4`, `caption.txt`, `metadata.json`, `manifest.json`, and `qc/contact-sheet.png`; the manifest includes SHA-256 hashes. Existing releases are refused unless `--overwrite` is supplied. Covers are excluded because the golden baseline has no independent post-render cover artifact.
+
+`reels:verify-release` revalidates an existing release without changing it. It checks the manifest shape, every listed SHA-256 hash, source ReelData identity and metadata parity, and the packaged MP4's H.264 codec, 1080 × 1920 dimensions, 30 FPS, duration, and required audio stream. Add `--deep` for full decode and selected-audio audibility validation; add `--json` for machine-readable output.
+
+`reels:audit` is a read-only reconciliation of production history, `data/reels`, rendered MP4s, social copy, QC evidence, and release packages. The default fast pass probes media metadata; `--deep` adds full decode and selected-audio audibility checks. Use `--reel <id>` to limit a deep pass and `npm run --silent reels:audit -- --json` for JSON-only stdout. The command reports discrepancies and orphans but never repairs or mutates history or artifacts.
 
 `plan` validates a confirmed-rights artwork handoff, uses a cached plan from `data/plans/<canonical-id>.json` when available, and writes deterministic V2 `ReelData` to `data/reels/<canonical-id>.json`. It makes one Gemini call only on a true cache miss; malformed, unreadable, or schema-incompatible caches fail closed unless `--force-plan` explicitly bypasses the cache. Set `GEMINI_API_KEY`, optionally `GEMINI_MODEL`, and optionally `GEMINI_THINKING_LEVEL` (`low`, `medium`, or `high`; default `high`) for a live plan. Gemini requests default to a 60-second timeout, a 20 MiB artwork limit, and a 2 MiB response limit; `ARTFOLIO_GEMINI_TIMEOUT_MS`, `ARTFOLIO_GEMINI_MAX_ARTWORK_BYTES`, and `ARTFOLIO_GEMINI_MAX_RESPONSE_BYTES` provide validated positive-integer overrides. New live responses append count-only usage and estimated cost telemetry to the ignored `data/telemetry/planner-usage.jsonl`; cached plans make zero Gemini calls and add no charge. Use the bundled networkless Starry Night fixture with `--mock`. Add `--force-plan` to bypass the cache.
 
@@ -42,6 +51,9 @@ advance the queue. A shortfall is reported rather than retried indefinitely.
 The ignored manifest is written to `output/reel-batches/<run-id>.json` and
 contains safe per-item outcomes plus aggregate Gemini usage/cost and timings.
 Set `ARTFOLIO_ART_BOT_ROOT` only when the Art Bot is not the sibling project.
+Within one batch, accepted candidates share one Remotion bundle and Chrome instance for sequential QC; final renders remain isolated in the existing validated render command. Batch manifests include an additive operational summary with accepted, QC-passed, rendered, failed, shortfall, retained/cleaned QC artifact, and render-failure counts.
+
+Set `ARTFOLIO_QC_RETENTION` to `all`, `summary`, or `none` (default `all`, preserving existing behavior). QC always renders full-resolution decision stills in a unique staging run. `summary` retains only a downscaled contact sheet and `qc-summary.json`; `none` retains no successful QC artifact. Failed runs preserve their partial evidence under `output/qc/.failures/`, and a successful rerun atomically replaces only that Reel's prior QC directory.
 
 ## AFM soundtrack integration
 

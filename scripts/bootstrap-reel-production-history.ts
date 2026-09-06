@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { verifyRenderMedia } from "../src/media/render-verification";
 import { PLANNER_VERSION } from "../src/planner/config";
 import { ReelDataSchema } from "../src/v2/schema";
 import { getDurationInFrames } from "../src/v2/timing";
@@ -18,14 +18,8 @@ const inspectRender = async (reelId: string): Promise<{ renderedAt: string; rend
   if (!metadata.isFile() || metadata.size === 0) throw new Error(`Missing or empty render: ${renderPath}`);
   const reel = ReelDataSchema.parse(JSON.parse(await readFile(resolve("data/reels", `${reelId}.json`), "utf8")));
   if (reel.id !== reelId || reel.artworks.length !== 1 || reel.artworks[0].id !== reelId) throw new Error(`ReelData does not match ${reelId}`);
-  const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_name,width,height,r_frame_rate:format=duration", "-of", "json", renderPath], { encoding: "utf8" });
-  if (probe.status !== 0) throw new Error(`ffprobe could not read ${renderPath}`);
-  const inspected = JSON.parse(probe.stdout) as { streams: Array<{ codec_name: string; width: number; height: number; r_frame_rate: string }>; format: { duration: string } };
-  const video = inspected.streams[0];
   const expectedSeconds = getDurationInFrames(reel) / VIDEO.fps;
-  if (video?.codec_name !== "h264" || video.width !== VIDEO.width || video.height !== VIDEO.height || video.r_frame_rate !== "30/1" || Math.abs(Number(inspected.format.duration) - expectedSeconds) > 0.1) {
-    throw new Error(`Rendered MP4 validation failed for ${reelId}`);
-  }
+  await verifyRenderMedia(renderPath, { durationSeconds: expectedSeconds, requireAudio: Boolean(reel.music) });
   return { renderedAt: metadata.mtime.toISOString(), renderPath };
 };
 

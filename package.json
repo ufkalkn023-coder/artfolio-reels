@@ -31,6 +31,8 @@
     "plan": "tsx scripts/plan.ts",
     "reel": "tsx scripts/reel.ts",
     "reels:batch": "tsx scripts/reels-batch.ts",
+    "reels:audit": "tsx scripts/reels-audit.ts",
+    "reels:verify-release": "tsx scripts/verify-release.ts",
     "reels:history:bootstrap": "tsx scripts/bootstrap-reel-production-history.ts",
     "music:analyze": "tsx scripts/music-analyze.ts",
     "test": "tsx scripts/run-tests.ts",

@@ -44,6 +44,17 @@ const run = async (): Promise<void> => {
   equal(full.gemini.inputTokens, 40, "input telemetry aggregates");
   equal(full.gemini.outputTokens, 80, "output telemetry aggregates");
   equal(full.gemini.thinkingTokens, 120, "thinking telemetry aggregates");
+  equal(full.operationalSummary.target, 4, "operational summary retains target");
+  equal(full.operationalSummary.accepted, 4, "operational summary retains accepted count");
+  equal(full.operationalSummary.qcPassed, 4, "operational summary retains QC passes");
+
+  const retentionSummary = await runReelBatch({
+    queue: queue([candidates[0]], 1), cacheDirectory: join(root, "plans-retention"), reelDirectory: join(root, "reels-retention"), outputDirectory: join(root, "output-retention"),
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
+    runExistingCommand: (name) => name === "qc" ? { qcArtifactsRetained: 2, qcArtifactsCleaned: 10 } : undefined,
+  });
+  equal(retentionSummary.operationalSummary.qcArtifactsRetained, 2, "batch summary aggregates retained QC artifacts");
+  equal(retentionSummary.operationalSummary.qcArtifactsCleaned, 10, "batch summary aggregates cleaned QC artifacts");
 
   const rejectedPlan = structuredClone(STARRY_NIGHT_MOCK_PLAN);
   rejectedPlan.details[1].focalX = rejectedPlan.details[0].focalX;
@@ -150,6 +161,8 @@ const run = async (): Promise<void> => {
   equal(rendered.completionCount, 1, "render shortfall reports successful render count");
   equal(rendered.outcome, "SHORTFALL", "QC target cannot make a render-short batch complete");
   equal(rendered.candidates[0].errorCode, "RENDER_FAILED", "render failure is isolated");
+  equal(rendered.operationalSummary.renderVerificationFailures, 1, "batch operational summary counts render-stage verification failures");
+  equal(rendered.operationalSummary.shortfall, 1, "batch operational summary reports shortfall");
   truthy(renders.includes("qc:batch-1") && renders.includes("qc:batch-2") && renders.includes("render:batch-2"), "only QC-passed candidates render");
 
   const mixedRender = await runReelBatch({

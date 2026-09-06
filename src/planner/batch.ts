@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { assessReelPlanAcceptance, type ReelPlanAcceptance } from "./acceptance";
@@ -46,7 +46,11 @@ export type BatchCandidateQueue = {
   };
 };
 
-export type ExistingBatchCommand = (name: "qc" | "render", reelId: string) => void;
+export type ExistingBatchCommandResult = {
+  qcArtifactsRetained?: number;
+  qcArtifactsCleaned?: number;
+};
+export type ExistingBatchCommand = (name: "qc" | "render", reelId: string) => Promise<ExistingBatchCommandResult | void> | ExistingBatchCommandResult | void;
 
 export type BatchCandidateAttempt = {
   queueOrder: number;
@@ -109,6 +113,18 @@ export type ReelBatchManifest = {
   plannerFailureCounts: Partial<Record<PlannerFailureCategoryValue, number>>;
   candidatesExhausted: boolean;
   outcome: "COMPLETE" | "SHORTFALL";
+  operationalSummary: {
+    target: number;
+    accepted: number;
+    qcPassed: number;
+    rendered: number;
+    released: number;
+    failed: number;
+    shortfall: number;
+    qcArtifactsRetained: number;
+    qcArtifactsCleaned: number;
+    renderVerificationFailures: number;
+  };
   gemini: BatchTelemetry;
   timings: {
     selectionDurationMs: number;
@@ -145,10 +161,11 @@ const safeErrorMessage = (error: unknown): string => {
   const message = error instanceof Error ? error.message : "Unknown error";
   return sanitizeDiagnostic(message, 300);
 };
-const defaultExistingCommand: ExistingBatchCommand = (name, reelId) => {
-  const result = spawnSync("npm", ["run", name, "--", reelId], { stdio: "inherit" });
-  if (result.status !== 0) throw new Error(`${name} failed for ${reelId}`);
-};
+const defaultExistingCommand: ExistingBatchCommand = (name, reelId) => new Promise((resolveCommand, reject) => {
+  const child = spawn("npm", ["run", name, "--", reelId], { stdio: "inherit" });
+  child.on("error", reject);
+  child.on("close", (code) => code === 0 ? resolveCommand() : reject(new Error(`${name} failed for ${reelId}`)));
+});
 const emptyTelemetry = (): BatchTelemetry => ({ calls: 0, cacheHits: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0, estimatedCostUsd: 0, plannerDurationMs: 0 });
 const addTelemetry = (total: BatchTelemetry, telemetry: PlannerUsageTelemetry | undefined, cacheHit: boolean): void => {
   if (cacheHit) total.cacheHits += 1;
@@ -195,6 +212,8 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   let acceptedCount = 0;
   let qcPassedCount = 0;
   let renderedCount = 0;
+  let qcArtifactsRetained = 0;
+  let qcArtifactsCleaned = 0;
   const completionCount = (): number => options.render ? renderedCount : qcPassedCount;
   let historyWrittenCount = 0;
   let productionHistory = options.productionHistory;
@@ -301,7 +320,9 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       await writeReelArtifact(attempt.planPath, compiled.reel);
       const qcStarted = performance.now();
       attempt.qcPath = resolve(outputDirectory, "qc", reelId);
-      runCommand("qc", reelId);
+      const qcResult = await runCommand("qc", reelId);
+      qcArtifactsRetained += qcResult?.qcArtifactsRetained ?? 0;
+      qcArtifactsCleaned += qcResult?.qcArtifactsCleaned ?? 0;
       timings.qcDurationMs += elapsed(qcStarted);
       attempt.qcStatus = "PASSED";
       qcPassedCount += 1;
@@ -333,7 +354,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
     try {
       const reelId = artifactIdFor(handoff.canonicalId);
       attempt.renderPath = resolveRenderOutputPath(handoff.canonicalId, handoff.title, outputDirectory);
-      runCommand("render", reelId);
+      await runCommand("render", reelId);
       timings.renderDurationMs += elapsed(renderStarted);
       attempt.renderStatus = "PASSED";
       renderedCount += 1;
@@ -362,11 +383,26 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   const finalCompletionCount = completionCount();
   const completionBasis = options.render ? "RENDERED" : "QC_PASSED";
   const candidatesExhausted = finalCompletionCount < queue.target && attempts.length >= Math.min(queue.candidateCount, queue.candidateLimit);
+  const shortfall = Math.max(0, queue.target - finalCompletionCount);
+  const renderVerificationFailures = attempts.filter((attempt) => attempt.errorCode === "RENDER_FAILED").length;
   return {
     batchVersion: REEL_BATCH_VERSION, startedAt, finishedAt: (options.now ?? (() => new Date()))().toISOString(),
     target: queue.target, candidateLimit: queue.candidateLimit, candidateCount: queue.candidateCount,
     plannedCount, acceptedCount, qcPassedCount, renderedCount, completionBasis, completionCount: finalCompletionCount,
     historyLoadedCount: options.productionHistory?.entries.length ?? 0, historyWrittenCount, rejectedCount, failedCount, plannerFailureCounts, candidatesExhausted,
-    outcome: finalCompletionCount >= queue.target ? "COMPLETE" : "SHORTFALL", gemini: telemetry, timings, candidates: attempts,
+    outcome: finalCompletionCount >= queue.target ? "COMPLETE" : "SHORTFALL",
+    operationalSummary: {
+      target: queue.target,
+      accepted: acceptedCount,
+      qcPassed: qcPassedCount,
+      rendered: renderedCount,
+      released: 0,
+      failed: failedCount,
+      shortfall,
+      qcArtifactsRetained,
+      qcArtifactsCleaned,
+      renderVerificationFailures,
+    },
+    gemini: telemetry, timings, candidates: attempts,
   };
 };

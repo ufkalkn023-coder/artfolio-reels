@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runReelBatch, writeBatchManifest, type BatchCandidateQueue } from "../src/planner/batch";
+import { runReelBatch, writeBatchManifest, type BatchCandidateQueue, type ExistingBatchCommand } from "../src/planner/batch";
 import { loadReelProductionHistory, productionHistoryExcludedCanonicalIds } from "../src/planner/production-history";
 import { exitCodeForBatchOutcome, parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
 import { buildArtBotSubprocessEnvironment, sanitizeSubprocessStderr } from "../src/planner/subprocess-security";
+import { runQcForReel } from "./qc";
+import { createRemotionQcResources, type QcRenderResources } from "./qc-rendering";
 export { exitCodeForBatchOutcome, parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
 
 type AcquisitionSource = { source: string; attempted: number; accepted: number; rejected: number; failed: number; rejectionReasons: Record<string, number> };
@@ -63,6 +65,32 @@ const invokeCandidateBoundary = async (historyPath: string): Promise<BatchCandid
   });
 });
 
+const runNpmCommand = async (name: string, reelId: string): Promise<void> => new Promise((resolveCommand, reject) => {
+  const child = spawn("npm", ["run", name, "--", reelId], { stdio: "inherit" });
+  child.on("error", reject);
+  child.on("close", (code) => code === 0 ? resolveCommand() : reject(new Error(`${name} failed for ${reelId}`)));
+});
+
+export const createBatchCommandRunner = (dependencies: {
+  createResources?: () => Promise<QcRenderResources>;
+  runQc?: typeof runQcForReel;
+  runNpm?: (name: string, reelId: string) => Promise<void>;
+} = {}): { run: ExistingBatchCommand; close: () => Promise<void> } => {
+  let qcResources: QcRenderResources | undefined;
+  const createResources = dependencies.createResources ?? createRemotionQcResources;
+  const runQc = dependencies.runQc ?? runQcForReel;
+  const runNpm = dependencies.runNpm ?? runNpmCommand;
+  return {
+    run: async (name, reelId) => {
+      if (name === "render") return runNpm(name, reelId);
+      qcResources ??= await createResources();
+      const result = await runQc(reelId, { resources: qcResources });
+      return { qcArtifactsRetained: result.retainedCount, qcArtifactsCleaned: result.cleanedCount };
+    },
+    close: async () => qcResources?.close(),
+  };
+};
+
 const main = async (): Promise<void> => {
   const historyPath = resolve("data/reel-production-history.json");
   let acquisitionSources: AcquisitionSource[] = [];
@@ -92,7 +120,13 @@ const main = async (): Promise<void> => {
     console.info(`[reel-selection] target=${queue.target} candidates=${queue.candidateCount} ids=${queue.candidates.map((candidate) => candidate.canonicalId).join(",")}`);
     return;
   }
-  const manifest = await runReelBatch({ queue, render, forcePlan, productionHistory, productionHistoryPath: historyPath, batchId: runId });
+  const commands = createBatchCommandRunner();
+  let manifest;
+  try {
+    manifest = await runReelBatch({ queue, render, forcePlan, productionHistory, productionHistoryPath: historyPath, batchId: runId, runExistingCommand: commands.run });
+  } finally {
+    await commands.close();
+  }
   manifest.timings.selectionDurationMs = Math.round(performance.now() - selectionStarted) - manifest.timings.totalDurationMs;
   const manifestPath = resolve("output/reel-batches", `${runId}.json`);
   await writeBatchManifest(manifestPath, manifest);
@@ -109,6 +143,7 @@ const main = async (): Promise<void> => {
   console.info(`[reel-batch] acquisition_rejections=${JSON.stringify(acquisitionRejections)}`);
   console.info(`[reel-batch] ${manifest.outcome}`);
   console.info(`target=${manifest.target} accepted=${manifest.acceptedCount} qc=${manifest.qcPassedCount} rendered=${manifest.renderedCount} completion=${manifest.completionBasis.toLowerCase()}:${manifest.completionCount} history_written=${manifest.historyWrittenCount} gemini_calls=${manifest.gemini.calls} cache_hits=${manifest.gemini.cacheHits} cost=$${manifest.gemini.estimatedCostUsd.toFixed(4)} time=${manifest.timings.totalDurationMs}ms`);
+  console.info(`[reel-batch] operations=${JSON.stringify(manifest.operationalSummary)}`);
   console.info(`[reel-batch] manifest=${manifestPath}`);
   process.exitCode = exitCodeForBatchOutcome(manifest.outcome);
 };

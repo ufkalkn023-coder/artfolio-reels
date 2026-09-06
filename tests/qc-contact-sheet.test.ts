@@ -6,6 +6,7 @@ import {
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
 };
+const truthy = (value: unknown, label: string): void => { if (!value) throw new Error(label); };
 
 const deepEqual = (actual: unknown, expected: unknown, label: string): void => {
   equal(JSON.stringify(actual), JSON.stringify(expected), label);
@@ -62,5 +63,8 @@ equal(
   "[0:v]null[contact-sheet]",
   "a single input uses a valid pass-through filter",
 );
+
+const thumbnailArgs = buildContactSheetFfmpegArgs(inputs, "/qc/contact-sheet.png", { thumbnailWidth: 270 });
+truthy(thumbnailArgs[thumbnailArgs.indexOf("-filter_complex") + 1].includes("scale=270:-2"), "summary contact sheet scales full-resolution stills down");
 
 console.log("QC contact-sheet layout tests passed");

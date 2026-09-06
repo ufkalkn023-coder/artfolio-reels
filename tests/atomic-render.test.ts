@@ -1,7 +1,7 @@
-import { access, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderAtomically } from "../src/planner/atomic-render";
+import { cleanupStaleRenderTemps, renderAtomically } from "../src/planner/atomic-render";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -65,6 +65,23 @@ await renderAtomically({
 });
 equal(await readFile(destination, "utf8"), "replacement", "overwrite promotes only the validated replacement");
 equal((await readdir(join(root, "renders"))).some((name) => name.startsWith(".tmp-")), false, "temporary renders are cleaned up");
+
+const rendersDirectory = join(root, "renders");
+const oldTemp = join(rendersDirectory, ".tmp-deadbeef-orphan.mp4");
+const freshTemp = join(rendersDirectory, ".tmp-fresh-active.mp4");
+const unrelated = join(rendersDirectory, ".unrelated-hidden.mp4");
+await Promise.all([writeFile(oldTemp, "old"), writeFile(freshTemp, "fresh"), writeFile(unrelated, "unrelated")]);
+const nowMs = Date.parse("2026-09-07T12:00:00.000Z");
+await utimes(oldTemp, new Date(nowMs - 25 * 60 * 60 * 1000), new Date(nowMs - 25 * 60 * 60 * 1000));
+await utimes(freshTemp, new Date(nowMs - 60 * 60 * 1000), new Date(nowMs - 60 * 60 * 1000));
+await utimes(unrelated, new Date(nowMs - 48 * 60 * 60 * 1000), new Date(nowMs - 48 * 60 * 60 * 1000));
+const cleaned = await cleanupStaleRenderTemps(rendersDirectory, { nowMs });
+equal(cleaned.length, 1, "only old recognized render temp is removed");
+equal(cleaned[0], oldTemp, "recognized orphan temp is reported");
+await missing(oldTemp, "old recognized temp");
+equal(await readFile(freshTemp, "utf8"), "fresh", "fresh render temp is preserved");
+equal(await readFile(unrelated, "utf8"), "unrelated", "unrelated hidden file is preserved");
+equal(await readFile(destination, "utf8"), "replacement", "final MP4 is preserved by stale cleanup");
 
 console.log("Atomic render tests passed");
 };

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { getSampleReel } from "../src/v2/samples";
@@ -9,6 +9,8 @@ import {
   resolveReleaseDirectory,
   resolveReleasePaths,
   sha256File,
+  verifyReleasePackage,
+  type ReleaseMediaVerifier,
 } from "../src/release/package";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
@@ -26,6 +28,15 @@ const rejects = async (operation: () => Promise<unknown>, expected: string, labe
 };
 
 type Fixture = { root: string; outputDirectory: string; reelDirectory: string; reelId: string; paths: ReturnType<typeof resolveReleasePaths> };
+
+const verifyMedia: ReleaseMediaVerifier = async (path, expectations, options = {}) => ({
+  path,
+  sizeBytes: (await stat(path)).size,
+  durationSeconds: expectations.durationSeconds,
+  video: { codec: "h264", width: 1080, height: 1920, fps: 30 },
+  ...(expectations.requireAudio ? { audio: { codec: "aac" } } : {}),
+  deep: options.deep ?? false,
+});
 
 const createFixture = async (reelId = "release-fixture"): Promise<Fixture> => {
   const root = await mkdtemp(join(tmpdir(), "artfolio-release-"));
@@ -70,7 +81,7 @@ const run = async (): Promise<void> => {
   await rejects(async () => { resolveReleaseDirectory("/absolute", fixture.outputDirectory); }, "not safe", "absolute reel ID is rejected");
 
   const sourceBytes = await Promise.all([fixture.paths.video, fixture.paths.caption, fixture.paths.qcContactSheet].map((path) => readFile(path, "utf8")));
-  const packaged = await packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, createdAt: fixedDate });
+  const packaged = await packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, createdAt: fixedDate, verifyMedia });
   equal(packaged.directory, releaseDirectory, "package returns deterministic release path");
   const expectedFiles = ["reel.mp4", "caption.txt", "metadata.json", "manifest.json", "qc/contact-sheet.png"];
   for (const file of expectedFiles) truthy(Boolean(await readFile(join(releaseDirectory, file))), `${file} is packaged`);
@@ -94,22 +105,47 @@ const run = async (): Promise<void> => {
   truthy(!("cover" in manifest.files), "cover is excluded from the post-render package contract");
   for (const path of Object.values(manifest.files) as string[]) truthy(!path.startsWith("/") && !path.includes(fixture.root), "manifest contains only relative release paths");
   equal(manifest.sha256["reel.mp4"], await sha256File(join(releaseDirectory, "reel.mp4")), "manifest hashes final video bytes");
+  equal((await verifyReleasePackage({ releaseDirectory, reelDirectory: fixture.reelDirectory, verifyMedia })).valid, true, "valid release manifest, hashes, metadata, and media verify");
 
-  await rejects(() => packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, createdAt: fixedDate }), "exists. Pass --overwrite", "existing release refuses overwrite by default");
+  await rejects(() => packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, createdAt: fixedDate, verifyMedia }), "exists. Pass --overwrite", "existing release refuses overwrite by default");
   await writeFile(fixture.paths.video, "replacement video bytes");
-  await packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, overwrite: true, createdAt: fixedDate });
+  await packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, overwrite: true, createdAt: fixedDate, verifyMedia });
   equal(await readFile(join(releaseDirectory, "reel.mp4"), "utf8"), "replacement video bytes", "overwrite safely replaces completed release");
 
   const missing = await createFixture("missing-video");
   await writeFile(missing.paths.video, "");
-  await rejects(() => packageRelease({ reelId: missing.reelId, outputDirectory: missing.outputDirectory, reelDirectory: missing.reelDirectory }), "rendered Reel MP4", "missing required artifact fails clearly");
+  await rejects(() => packageRelease({ reelId: missing.reelId, outputDirectory: missing.outputDirectory, reelDirectory: missing.reelDirectory, verifyMedia }), "rendered Reel MP4", "missing required artifact fails clearly");
   truthy(!existsSync(resolveReleaseDirectory(missing.reelId, missing.outputDirectory)), "no final release remains after missing artifact failure");
 
   const captionFailure = await createFixture("caption-failure");
   await writeFile(captionFailure.paths.caption, "\nMUSIC SUGGESTIONS\n-----------------\n\n1. Artist — Song\n");
-  await rejects(() => packageRelease({ reelId: captionFailure.reelId, outputDirectory: captionFailure.outputDirectory, reelDirectory: captionFailure.reelDirectory }), "caption is empty", "invalid staged caption fails clearly");
+  await rejects(() => packageRelease({ reelId: captionFailure.reelId, outputDirectory: captionFailure.outputDirectory, reelDirectory: captionFailure.reelDirectory, verifyMedia }), "caption is empty", "invalid staged caption fails clearly");
   truthy(!existsSync(resolveReleaseDirectory(captionFailure.reelId, captionFailure.outputDirectory)), "staged failure leaves no partial final release");
   equal((await stagedDirectoriesFor(captionFailure)).length, 0, "staging directory is cleaned after failed packaging");
+
+  const hashMismatch = await createFixture("hash-mismatch");
+  await packageRelease({ reelId: hashMismatch.reelId, outputDirectory: hashMismatch.outputDirectory, reelDirectory: hashMismatch.reelDirectory, verifyMedia });
+  const hashMismatchDirectory = resolveReleaseDirectory(hashMismatch.reelId, hashMismatch.outputDirectory);
+  await writeFile(join(hashMismatchDirectory, "caption.txt"), "tampered caption");
+  const hashMismatchResult = await verifyReleasePackage({ releaseDirectory: hashMismatchDirectory, reelDirectory: hashMismatch.reelDirectory, verifyMedia });
+  truthy(hashMismatchResult.errors.some((error) => error.includes("SHA-256 mismatch")), "release hash mismatch is detected");
+
+  const reelMismatch = await createFixture("reel-mismatch");
+  await packageRelease({ reelId: reelMismatch.reelId, outputDirectory: reelMismatch.outputDirectory, reelDirectory: reelMismatch.reelDirectory, verifyMedia });
+  const changedReel = JSON.parse(await readFile(reelMismatch.paths.reelData, "utf8"));
+  changedReel.title = "Changed after packaging";
+  await writeFile(reelMismatch.paths.reelData, JSON.stringify(changedReel));
+  const reelMismatchResult = await verifyReleasePackage({ releaseDirectory: resolveReleaseDirectory(reelMismatch.reelId, reelMismatch.outputDirectory), reelDirectory: reelMismatch.reelDirectory, verifyMedia });
+  truthy(reelMismatchResult.errors.some((error) => error.includes("metadata does not match")), "release ReelData mismatch is detected");
+
+  const mediaMismatch = await createFixture("media-mismatch");
+  await packageRelease({ reelId: mediaMismatch.reelId, outputDirectory: mediaMismatch.outputDirectory, reelDirectory: mediaMismatch.reelDirectory, verifyMedia });
+  const mediaMismatchResult = await verifyReleasePackage({
+    releaseDirectory: resolveReleaseDirectory(mediaMismatch.reelId, mediaMismatch.outputDirectory),
+    reelDirectory: mediaMismatch.reelDirectory,
+    verifyMedia: async () => { throw new Error("unexpected dimensions"); },
+  });
+  truthy(mediaMismatchResult.errors.some((error) => error.includes("Invalid release MP4") && error.includes("unexpected dimensions")), "release MP4 metadata mismatch is detected");
 
   console.log("Release package tests passed");
 };

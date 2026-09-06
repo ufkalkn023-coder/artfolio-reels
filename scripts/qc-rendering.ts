@@ -20,6 +20,11 @@ export type QcRenderSession = {
   close: () => Promise<void>;
 };
 
+export type QcRenderResources = {
+  createSession: (options: CreateRemotionQcSessionOptions) => Promise<QcRenderSession>;
+  close: () => Promise<void>;
+};
+
 type RenderQcCheckpointsOptions = {
   checkpoints: readonly QcCheckpoint[];
   directory: string;
@@ -72,6 +77,20 @@ export const createRemotionQcSession = async ({
   compositionId,
   inputProps,
 }: CreateRemotionQcSessionOptions): Promise<QcRenderSession> => {
+  const resources = await createRemotionQcResources();
+  try {
+    const session = await resources.createSession({ compositionId, inputProps });
+    return {
+      renderStill: session.renderStill,
+      close: resources.close,
+    };
+  } catch (error) {
+    await resources.close().catch(() => undefined);
+    throw error;
+  }
+};
+
+export const createRemotionQcResources = async (): Promise<QcRenderResources> => {
   let bundleDirectory: string | undefined;
   let browser: HeadlessBrowser | undefined;
 
@@ -106,25 +125,31 @@ export const createRemotionQcSession = async ({
     });
     bundleDirectory = serveUrl;
     browser = await openBrowser("chrome");
-    const composition: VideoConfig = await selectComposition({
-      serveUrl,
-      id: compositionId,
-      inputProps,
-      puppeteerInstance: browser,
-    });
-
     return {
-      renderStill: async ({ checkpoint, output }) => {
-        await renderStill({
+      createSession: async ({ compositionId, inputProps }) => {
+        if (!browser) throw new Error("QC browser resources are closed");
+        const composition: VideoConfig = await selectComposition({
           serveUrl,
-          composition,
+          id: compositionId,
           inputProps,
           puppeteerInstance: browser,
-          frame: checkpoint.absoluteFrame,
-          output,
-          imageFormat: "png",
-          overwrite: true,
         });
+        return {
+          renderStill: async ({ checkpoint, output }) => {
+            if (!browser) throw new Error("QC browser resources are closed");
+            await renderStill({
+              serveUrl,
+              composition,
+              inputProps,
+              puppeteerInstance: browser,
+              frame: checkpoint.absoluteFrame,
+              output,
+              imageFormat: "png",
+              overwrite: true,
+            });
+          },
+          close: async () => undefined,
+        };
       },
       close,
     };

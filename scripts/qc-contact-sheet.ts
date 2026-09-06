@@ -32,13 +32,18 @@ export const createContactSheetLayout = (
 export const buildContactSheetFfmpegArgs = (
   inputs: readonly string[],
   output: string,
+  options: { thumbnailWidth?: number } = {},
 ): string[] => {
   const layout = createContactSheetLayout(inputs.length);
-  const inputLabels = inputs.map((_, index) => `[${index}:v]`).join("");
+  const scaledInputs = options.thumbnailWidth
+    ? inputs.map((_, index) => `[${index}:v]scale=${options.thumbnailWidth}:-2[t${index}]`).join(";")
+    : "";
+  const inputLabels = inputs.map((_, index) => options.thumbnailWidth ? `[t${index}]` : `[${index}:v]`).join("");
   const outputLabel = "[contact-sheet]";
-  const filter = inputs.length === 1
+  const stack = inputs.length === 1
     ? `${inputLabels}null${outputLabel}`
     : `${inputLabels}xstack=inputs=${inputs.length}:layout=${layout.positions.join("|")}:fill=black${outputLabel}`;
+  const filter = scaledInputs ? `${scaledInputs};${stack}` : stack;
 
   return [
     "-y",
