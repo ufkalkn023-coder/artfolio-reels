@@ -233,8 +233,48 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
     console.info(`[reel-history] ${handoff.canonicalId} ${result.transition ?? `status=${result.entry.status}`} ${result.changed ? "recorded" : "already recorded"}`);
   };
 
-  for (const [index, candidate] of queue.candidates.slice(0, queue.candidateLimit).entries()) {
+  type PreparedCandidate = {
+    candidate: BatchCandidate;
+    handoff?: ArtworkHandoff;
+    localized?: LocalizedArtworkAsset;
+    errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED";
+    errorMessageSafe?: string;
+  };
+  type RenderReadyCandidate = {
+    handoff: ArtworkHandoff;
+    attempt: BatchCandidateAttempt;
+    planned: Awaited<ReturnType<typeof planArtwork>>;
+    compiled: ReturnType<typeof compileSingleArtworkPlan>;
+  };
+  const preparedCandidates: PreparedCandidate[] = [];
+  const renderReadyCandidates: RenderReadyCandidate[] = [];
+  // The Remotion bundle snapshots public/. Localize every bounded queue asset
+  // serially before the first QC command may initialize shared resources.
+  for (const candidate of queue.candidates.slice(0, queue.candidateLimit)) {
+    const prepared: PreparedCandidate = { candidate };
+    const handoffStarted = performance.now();
+    try {
+      prepared.handoff = ArtworkHandoffSchema.parse(JSON.parse(await readFile(candidate.handoffPath, "utf8")));
+      if (prepared.handoff.canonicalId !== candidate.canonicalId) throw new Error("Handoff canonical ID does not match candidate queue");
+    } catch (error) {
+      prepared.errorCode = "HANDOFF_FAILED";
+      prepared.errorMessageSafe = safeErrorMessage(error);
+    }
+    timings.handoffDurationMs += elapsed(handoffStarted);
+    if (prepared.handoff) {
+      try {
+        prepared.localized = await localize(prepared.handoff);
+      } catch (error) {
+        prepared.errorCode = "ASSET_FAILED";
+        prepared.errorMessageSafe = safeErrorMessage(error);
+      }
+    }
+    preparedCandidates.push(prepared);
+  }
+
+  for (const [index, prepared] of preparedCandidates.entries()) {
     if (completionCount() >= queue.target) break;
+    const { candidate } = prepared;
     const attempt: BatchCandidateAttempt = {
       queueOrder: index + 1, canonicalId: candidate.canonicalId, artist: candidate.artist, museum: candidate.museum,
       baseScore: candidate.baseScore, portfolioPriorityScore: candidate.portfolioPriorityScore,
@@ -242,31 +282,22 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       acceptanceReasons: [], acceptanceWarnings: [], qcStatus: "SKIPPED", renderStatus: "SKIPPED",
     };
     attempts.push(attempt);
-    let handoff: ArtworkHandoff;
-    const handoffStarted = performance.now();
-    try {
-      handoff = ArtworkHandoffSchema.parse(JSON.parse(await readFile(candidate.handoffPath, "utf8")));
-      if (handoff.canonicalId !== candidate.canonicalId) throw new Error("Handoff canonical ID does not match candidate queue");
-      attempt.handoffStatus = "OK";
-    } catch (error) {
+    if (!prepared.handoff) {
       attempt.handoffStatus = "FAILED";
       attempt.plannerStatus = "FAILED";
-      attempt.errorCode = "HANDOFF_FAILED";
-      attempt.errorMessageSafe = safeErrorMessage(error);
-      timings.handoffDurationMs += elapsed(handoffStarted);
+      attempt.errorCode = prepared.errorCode ?? "HANDOFF_FAILED";
+      attempt.errorMessageSafe = prepared.errorMessageSafe;
       continue;
     }
-    timings.handoffDurationMs += elapsed(handoffStarted);
-
-    let localized: LocalizedArtworkAsset;
-    try {
-      localized = await localize(handoff);
-    } catch (error) {
+    const handoff = prepared.handoff;
+    attempt.handoffStatus = "OK";
+    if (!prepared.localized) {
       attempt.plannerStatus = "FAILED";
-      attempt.errorCode = "ASSET_FAILED";
-      attempt.errorMessageSafe = safeErrorMessage(error);
+      attempt.errorCode = prepared.errorCode ?? "ASSET_FAILED";
+      attempt.errorMessageSafe = prepared.errorMessageSafe;
       continue;
     }
+    const localized = prepared.localized;
 
     const plannerStarted = performance.now();
     let planned;
@@ -332,6 +363,10 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       attempt.errorMessageSafe = safeErrorMessage(error);
       continue;
     }
+    if (options.render) {
+      renderReadyCandidates.push({ handoff, attempt, planned, compiled });
+      continue;
+    }
     const music = await (options.enrichMusic ?? enrichCompletedReelWithAfm)(
       compiled.reel,
       productionHistory ?? { version: "reel-production-history-v1", entries: [] },
@@ -346,10 +381,30 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       await writeReelArtifact(attempt.planPath!, music.reel);
       console.info(`[afm] artwork=${handoff.canonicalId} track=${attempt.musicTrackId} subfamily=${attempt.musicSubfamily} score=${music.selection.score.total}`);
     }
-    if (!options.render) {
-      await recordHistory(handoff, attempt, "QC_PASSED");
-      continue;
+    await recordHistory(handoff, attempt, "QC_PASSED");
+  }
+
+  // AFM selection intentionally remains post-QC. Complete every localization
+  // before the first final-render command creates a bundle that snapshots public/.
+  for (const { handoff, attempt, compiled } of renderReadyCandidates) {
+    const music = await (options.enrichMusic ?? enrichCompletedReelWithAfm)(
+      compiled.reel,
+      productionHistory ?? { version: "reel-production-history-v1", entries: [] },
+    );
+    if (music.warning) {
+      attempt.musicWarning = music.warning;
+      console.warn(`[afm] artwork=${handoff.canonicalId} warning=${music.warning}`);
     }
+    if (music.selection) {
+      attempt.musicTrackId = music.selection.track.id;
+      attempt.musicSubfamily = music.selection.track.subfamilyCode;
+      await writeReelArtifact(attempt.planPath!, music.reel);
+      console.info(`[afm] artwork=${handoff.canonicalId} track=${attempt.musicTrackId} subfamily=${attempt.musicSubfamily} score=${music.selection.score.total}`);
+    }
+  }
+
+  for (const { handoff, attempt, planned } of renderReadyCandidates) {
+    if (renderedCount >= queue.target) break;
     const renderStarted = performance.now();
     try {
       const reelId = artifactIdFor(handoff.canonicalId);

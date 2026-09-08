@@ -5,8 +5,8 @@ import { runReelBatch, writeBatchManifest, type BatchCandidateQueue, type Existi
 import { loadReelProductionHistory, productionHistoryExcludedCanonicalIds } from "../src/planner/production-history";
 import { exitCodeForBatchOutcome, parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
 import { buildArtBotSubprocessEnvironment, sanitizeSubprocessStderr } from "../src/planner/subprocess-security";
-import { runQcForReel } from "./qc";
-import { createRemotionQcResources, type QcRenderResources } from "./qc-rendering";
+import { type RenderSession } from "../src/render/render-session";
+import { createReelOutputRunner } from "./reel-output";
 export { exitCodeForBatchOutcome, parseReelBatchCliArgs } from "../src/planner/reels-batch-cli";
 
 type AcquisitionSource = { source: string; attempted: number; accepted: number; rejected: number; failed: number; rejectionReasons: Record<string, number> };
@@ -65,30 +65,12 @@ const invokeCandidateBoundary = async (historyPath: string): Promise<BatchCandid
   });
 });
 
-const runNpmCommand = async (name: string, reelId: string): Promise<void> => new Promise((resolveCommand, reject) => {
-  const child = spawn("npm", ["run", name, "--", reelId], { stdio: "inherit" });
-  child.on("error", reject);
-  child.on("close", (code) => code === 0 ? resolveCommand() : reject(new Error(`${name} failed for ${reelId}`)));
-});
-
 export const createBatchCommandRunner = (dependencies: {
-  createResources?: () => Promise<QcRenderResources>;
-  runQc?: typeof runQcForReel;
-  runNpm?: (name: string, reelId: string) => Promise<void>;
+  createSession?: () => Promise<RenderSession>;
+  createCommand?: (session: RenderSession) => ExistingBatchCommand;
+  outputDirectory?: string;
 } = {}): { run: ExistingBatchCommand; close: () => Promise<void> } => {
-  let qcResources: QcRenderResources | undefined;
-  const createResources = dependencies.createResources ?? createRemotionQcResources;
-  const runQc = dependencies.runQc ?? runQcForReel;
-  const runNpm = dependencies.runNpm ?? runNpmCommand;
-  return {
-    run: async (name, reelId) => {
-      if (name === "render") return runNpm(name, reelId);
-      qcResources ??= await createResources();
-      const result = await runQc(reelId, { resources: qcResources });
-      return { qcArtifactsRetained: result.retainedCount, qcArtifactsCleaned: result.cleanedCount };
-    },
-    close: async () => qcResources?.close(),
-  };
+  return createReelOutputRunner(dependencies);
 };
 
 const main = async (): Promise<void> => {

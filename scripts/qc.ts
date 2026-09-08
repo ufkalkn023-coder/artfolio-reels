@@ -2,18 +2,19 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type RenderSession } from "../src/render/render-session";
 import { planQcCheckpoints } from "../src/v2/qc";
 import { createScenePlan } from "../src/v2/timing";
 import { beginQcRun, finalizeSuccessfulQcRun, preserveFailedQcRun, resolveQcRetention, type QcLifecycleResult, type QcRetention } from "../src/qc/lifecycle";
 import { buildContactSheetFfmpegArgs } from "./qc-contact-sheet";
-import { createRemotionQcSession, renderQcCheckpoints, type QcRenderResources } from "./qc-rendering";
+import { createQcRenderSession, createRemotionQcSession, renderQcCheckpoints } from "./qc-rendering";
 import { resolveReel } from "./reel-data";
 
 export type RunQcOptions = {
   debugTargets?: boolean;
   outputDirectory?: string;
   retention?: QcRetention;
-  resources?: QcRenderResources;
+  session?: RenderSession;
 };
 
 const runFfmpeg = async (args: readonly string[]): Promise<void> => new Promise((resolveProcess, reject) => {
@@ -41,9 +42,9 @@ export const runQcForReel = async (reelId: string, options: RunQcOptions = {}): 
     await renderQcCheckpoints({
       checkpoints,
       directory,
-      createSession: () => options.resources
-        ? options.resources.createSession({ compositionId, inputProps })
-        : createRemotionQcSession({ compositionId, inputProps }),
+      ...(options.session
+        ? { session: await createQcRenderSession(options.session, { compositionId, inputProps }) }
+        : { createSession: () => createRemotionQcSession({ compositionId, inputProps }) }),
     });
 
     const contactSheet = resolve(directory, "contact-sheet.png");

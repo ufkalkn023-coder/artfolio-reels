@@ -1,13 +1,9 @@
-import { rmSync } from "node:fs";
 import { resolve } from "node:path";
-import { bundle } from "@remotion/bundler";
 import {
-  openBrowser,
-  renderStill,
-  selectComposition,
-  type HeadlessBrowser,
-} from "@remotion/renderer";
-import { type VideoConfig } from "remotion/no-react";
+  createRenderSession,
+  type RenderSession,
+  type SelectedRenderSource,
+} from "../src/render/render-session";
 import { type QcCheckpoint } from "../src/v2/qc";
 
 export type QcStillRequest = {
@@ -20,15 +16,11 @@ export type QcRenderSession = {
   close: () => Promise<void>;
 };
 
-export type QcRenderResources = {
-  createSession: (options: CreateRemotionQcSessionOptions) => Promise<QcRenderSession>;
-  close: () => Promise<void>;
-};
-
 type RenderQcCheckpointsOptions = {
   checkpoints: readonly QcCheckpoint[];
   directory: string;
-  createSession: () => Promise<QcRenderSession>;
+  createSession?: () => Promise<QcRenderSession>;
+  session?: QcRenderSession;
 };
 
 type CreateRemotionQcSessionOptions = {
@@ -42,9 +34,14 @@ export const renderQcCheckpoints = async ({
   checkpoints,
   directory,
   createSession,
+  session: providedSession,
 }: RenderQcCheckpointsOptions): Promise<void> => {
-  const session = await createSession();
+  if (providedSession && createSession) throw new Error("Provide either a QC render session or a session factory, not both");
+  if (!providedSession && !createSession) throw new Error("A QC render session or session factory is required");
+  const session = providedSession ?? await createSession!();
+  const ownsSession = !providedSession;
   let renderError: Error | undefined;
+  let cleanupError: Error | undefined;
 
   try {
     for (const checkpoint of checkpoints) {
@@ -59,108 +56,49 @@ export const renderQcCheckpoints = async ({
       }
     }
   } finally {
-    try {
-      await session.close();
-    } catch (error) {
-      const cleanupMessage = `Could not close QC rendering resources: ${errorMessage(error)}`;
-      if (renderError) {
-        throw new Error(`${renderError.message} Cleanup also failed: ${cleanupMessage}`);
+    if (ownsSession) {
+      try {
+        await session.close();
+      } catch (error) {
+        cleanupError = new Error(`Could not close QC rendering resources: ${errorMessage(error)}`);
       }
-      throw new Error(cleanupMessage);
     }
   }
 
+  if (renderError && cleanupError) throw new Error(`${renderError.message} Cleanup also failed: ${cleanupError.message}`);
+  if (cleanupError) throw cleanupError;
   if (renderError) throw renderError;
 };
 
-export const createRemotionQcSession = async ({
-  compositionId,
-  inputProps,
-}: CreateRemotionQcSessionOptions): Promise<QcRenderSession> => {
-  const resources = await createRemotionQcResources();
-  try {
-    const session = await resources.createSession({ compositionId, inputProps });
-    return {
-      renderStill: session.renderStill,
-      close: resources.close,
-    };
-  } catch (error) {
-    await resources.close().catch(() => undefined);
-    throw error;
-  }
-};
-
-export const createRemotionQcResources = async (): Promise<QcRenderResources> => {
-  let bundleDirectory: string | undefined;
-  let browser: HeadlessBrowser | undefined;
-
-  const close = async (): Promise<void> => {
-    const cleanupErrors: string[] = [];
-    if (browser) {
-      try {
-        await browser.close({ silent: false });
-      } catch (error) {
-        cleanupErrors.push(`browser: ${errorMessage(error)}`);
-      }
-      browser = undefined;
-    }
-    if (bundleDirectory) {
-      try {
-        rmSync(bundleDirectory, { recursive: true, force: true });
-      } catch (error) {
-        cleanupErrors.push(`bundle directory ${bundleDirectory}: ${errorMessage(error)}`);
-      }
-      bundleDirectory = undefined;
-    }
-    if (cleanupErrors.length > 0) throw new Error(cleanupErrors.join("; "));
-  };
-
-  try {
-    const serveUrl = await bundle({
-      entryPoint: resolve("src/index.ts"),
-      rspack: true,
-      onDirectoryCreated: (directory) => {
-        bundleDirectory = directory;
-      },
+const qcSessionFromSource = (
+  source: SelectedRenderSource,
+  close: () => Promise<void> = async () => undefined,
+): QcRenderSession => ({
+  renderStill: async ({ checkpoint, output }) => {
+    await source.renderStill({
+      frame: checkpoint.absoluteFrame,
+      output,
+      imageFormat: "png",
+      overwrite: true,
     });
-    bundleDirectory = serveUrl;
-    browser = await openBrowser("chrome");
-    return {
-      createSession: async ({ compositionId, inputProps }) => {
-        if (!browser) throw new Error("QC browser resources are closed");
-        const composition: VideoConfig = await selectComposition({
-          serveUrl,
-          id: compositionId,
-          inputProps,
-          puppeteerInstance: browser,
-        });
-        return {
-          renderStill: async ({ checkpoint, output }) => {
-            if (!browser) throw new Error("QC browser resources are closed");
-            await renderStill({
-              serveUrl,
-              composition,
-              inputProps,
-              puppeteerInstance: browser,
-              frame: checkpoint.absoluteFrame,
-              output,
-              imageFormat: "png",
-              overwrite: true,
-            });
-          },
-          close: async () => undefined,
-        };
-      },
-      close,
-    };
+  },
+  close,
+});
+
+export const createQcRenderSession = async (
+  renderSession: RenderSession,
+  options: CreateRemotionQcSessionOptions,
+): Promise<QcRenderSession> => qcSessionFromSource(await renderSession.selectSource(options));
+
+export const createRemotionQcSession = async (
+  options: CreateRemotionQcSessionOptions,
+): Promise<QcRenderSession> => {
+  const renderSession = await createRenderSession();
+  try {
+    const source = await renderSession.selectSource(options);
+    return qcSessionFromSource(source, () => renderSession.close());
   } catch (error) {
-    try {
-      await close();
-    } catch (cleanupError) {
-      throw new Error(
-        `Could not initialize QC rendering: ${errorMessage(error)} Cleanup also failed: ${errorMessage(cleanupError)}`,
-      );
-    }
-    throw new Error(`Could not initialize QC rendering: ${errorMessage(error)}`);
+    await renderSession.close().catch(() => undefined);
+    throw error;
   }
 };
