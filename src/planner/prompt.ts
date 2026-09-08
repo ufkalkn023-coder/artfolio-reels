@@ -3,6 +3,8 @@ import { type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
 import { templateConstraintSummary } from "./reel-plan";
 import { EMPTY_RECENT_MUSIC_CONTEXT, formatRecentMusicContext, type RecentMusicContext } from "./music-history";
+import { plannerCameraMotionConstraintSummary } from "./acceptance";
+import { type PlannerCallContext } from "./service";
 
 export const buildGeminiPlannerPrompt = (
   artwork: ArtworkHandoff,
@@ -51,7 +53,9 @@ For why-this-works, centralIdea must concisely name the visible mechanism and ho
 Use one visual idea per scene. Build curiosity → attention → observation → full artwork → identity. Before writing every detail observation, internally answer: "What exact visible thing is this sentence asking the viewer to inspect?" Return only the matching structured target, never that reasoning. A detail scene and every observation scene must reference its returned detail id; observationIndex is also required by the registered sequence. Each detail needs id, label, one observation of 18 words or fewer, focalX and focalY (0-1, origin top-left), preferredScale (greater than 0 and at most 2.5), and targetType (COMPACT, REGION, or RELATION). Use COMPACT for a face, hand, animal, or object; REGION for a larger visible area; RELATION only when the observation depends on multiple areas. targetRegion is optional and, only when useful for REGION or RELATION, is {x,y,width,height} within 0-1 normalized artwork bounds. Do not return reasoning or a computer-vision schema.
 
 CAMERA
-Camera can only use: ${CameraMoveSchema.options.join(", ")}. Camera movement must be slow, calm, deliberate, and serve the returned visual target; stillness is preferred over unnecessary motion. Do not assign movement to every scene. COMPACT targets should use detail-hold or restrained zoom, not arbitrary pans. REGION targets should use stable framing or a gentle zoom. RELATION targets must keep the whole relationship understandable, using a deliberate travel only when it helps. Establish the target while its observation is read, then leave a meaningful hold. Use a pan only when directional travel reveals a wider visual path or composition; do not pan across a tiny isolated focal point. detail-hold is always appropriate when the selected region is already well framed. Never use free-form camera directions.
+Camera can only use: ${CameraMoveSchema.options.join(", ")}. For acceptance counting, none and detail-hold do not count as moving scenes; every other camera move does. These are hard rejection boundaries and safety targets derived from the acceptance policy:
+${plannerCameraMotionConstraintSummary(eligibility.eligibleTemplates)}
+Stay at or below the safety target for the selected template. Do not make every shot static: retain cinematic movement where it reveals the artwork, but use stable framing and meaningful holds for the remaining scenes. Camera movement must be slow, calm, deliberate, and serve the returned visual target; stillness is preferred over unnecessary motion. Do not assign movement to every scene. COMPACT targets should use detail-hold or restrained zoom, not arbitrary pans. REGION targets should use stable framing or a gentle zoom. RELATION targets must keep the whole relationship understandable, using a deliberate travel only when it helps. Establish the target while its observation is read, then leave a meaningful hold. Use a pan only when directional travel reveals a wider visual path or composition; do not pan across a tiny isolated focal point. detail-hold is always appropriate when the selected region is already well framed. Never use free-form camera directions.
 
 MUSIC SUGGESTIONS
 Return exactly three distinct, identifiable, searchable compositions or tracks selected for this specific artwork and Reel narrative. Consider the verified title, artist, date, classification, geographic/cultural context when known from verified metadata or clearly visible in the supplied work, visible subject, mood, palette, light, emotional tone, narrative intensity, and Reel pacing. Do not default every artwork to generic European classical music; culturally specific works require culturally and aesthetically considered choices. Historical compatibility is useful but visual and emotional fit also matters.
@@ -63,3 +67,19 @@ Recent tracks are a strong exclusion for this plan. Recent composer/artist frequ
 
 Do not choose two-works-one-idea: this request contains exactly one artwork. Return only JSON with this shape:
 {"template":"...","hook":{"type":"QUESTION","text":"..."},"centralIdea":"...","details":[{"id":"...","label":"...","observation":"...","focalX":0.5,"focalY":0.5,"preferredScale":1.2,"targetType":"COMPACT"}],"scenes":[{"id":"...","kind":"intro","seconds":2.2,"camera":{"move":"none"}},{"id":"...","kind":"observation","seconds":3,"detailId":"...","observationIndex":0,"camera":{"move":"detail-hold"}}],"musicSuggestions":[{"artist":"...","title":"...","role":"best_fit","reason":"..."},{"artist":"...","title":"...","role":"alternative","reason":"..."},{"artist":"...","title":"...","role":"cinematic","reason":"..."}]}`;
+
+export const buildGeminiMotionRepairPrompt = (
+  artwork: ArtworkHandoff,
+  eligibility: ReelEligibility,
+  context: PlannerCallContext,
+  recentMusic: RecentMusicContext = EMPTY_RECENT_MUSIC_CONTEXT,
+): string => `${buildGeminiPlannerPrompt(artwork, eligibility, recentMusic)}
+
+MOTION REPAIR
+The prior plan failed the authoritative acceptance gate for exactly this reason:
+${context.rejectionReason}: ${context.originalMovingSceneCount} moving scenes exceeds the hard maximum of ${context.allowedMaximum}.
+
+Return one corrected JSON plan. Preserve every non-camera field exactly, including template, hook, centralIdea, details, scene ids/kinds/timing/detail references, and musicSuggestions. Change only scene camera objects. Reduce moving scenes to at most the safety target of ${context.safetyTarget}, while retaining intentional cinematic movement. The corrected plan will pass through the same normal acceptance gate and is not automatically accepted.
+
+REJECTED PLAN
+${JSON.stringify(context.rejectedPlan)}`;

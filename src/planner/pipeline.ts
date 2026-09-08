@@ -7,9 +7,10 @@ import { ArtworkHandoffSchema, type ArtworkHandoff } from "./handoff";
 import { planArtwork, type PlannerCall } from "./service";
 import { type ReelEligibility } from "./eligibility";
 import { type PlannerUsageTelemetry } from "./telemetry";
-import { assessReelPlanAcceptance, ReelPlanAcceptanceError, type ReelPlanAcceptance } from "./acceptance";
+import { ReelPlanAcceptanceError, type ReelPlanAcceptance } from "./acceptance";
 import { type ReelPlan } from "./reel-plan";
 import { type RecentMusicContext } from "./music-history";
+import { type MotionRepairDiagnostics } from "./service";
 
 export type HandoffPipelineResult = CompileResult & {
   handoff: ArtworkHandoff;
@@ -17,7 +18,10 @@ export type HandoffPipelineResult = CompileResult & {
   cacheHit: boolean;
   reelPath: string;
   telemetry?: PlannerUsageTelemetry;
+  repairTelemetry?: PlannerUsageTelemetry;
+  initialAcceptance: ReelPlanAcceptance;
   acceptance: ReelPlanAcceptance;
+  motionRepair: MotionRepairDiagnostics;
 };
 
 export type HandoffPipelineOptions = {
@@ -59,7 +63,7 @@ export const runHandoffPipeline = async (
     callPlanner: options.callPlanner,
     recentMusic: options.recentMusic,
   });
-  const acceptance = assessReelPlanAcceptance(planned.plan, { artwork: localized.artwork, isFallback: planned.fallback });
+  const acceptance = planned.acceptance;
   const acceptanceSummary = acceptance.accepted
     ? `[plan-gate] artwork=${handoff.canonicalId} accepted=true warnings=${acceptance.warnings.length}`
     : `[plan-gate] artwork=${handoff.canonicalId} accepted=false reason=${acceptance.rejectionReasons[0] ?? "UNKNOWN"}`;
@@ -68,5 +72,16 @@ export const runHandoffPipeline = async (
   const compiled = (options.compile ?? compileSingleArtworkPlan)(localized.artwork, planned.plan, planned.eligibility);
   const reelPath = join(options.reelDirectory, `${artifactIdFor(handoff.canonicalId)}.json`);
   await writeReelArtifact(reelPath, compiled.reel);
-  return { ...compiled, handoff, plan: planned.plan, cacheHit: planned.cacheHit, reelPath, telemetry: planned.telemetry, acceptance };
+  return {
+    ...compiled,
+    handoff,
+    plan: planned.plan,
+    cacheHit: planned.cacheHit,
+    reelPath,
+    telemetry: planned.telemetry,
+    repairTelemetry: planned.repairTelemetry,
+    initialAcceptance: planned.initialAcceptance,
+    acceptance,
+    motionRepair: planned.motionRepair,
+  };
 };

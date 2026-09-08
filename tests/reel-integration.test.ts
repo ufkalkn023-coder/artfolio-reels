@@ -103,13 +103,14 @@ const run = async (): Promise<void> => {
   equal(fallbackCompilerCalls, 0, "fallback plan never reaches compiler");
   equal(fallbackOutputCommands, 0, "fallback plan never reaches QC/render");
 
+  await writeCachedPlan(join(fallbackRoot, "plans"), handoff, STARRY_NIGHT_MOCK_PLAN, true);
   let cachedFallbackPlannerCalls = 0;
   await rejects(() => runReelIntegration(handoff, {
     cacheDirectory: join(fallbackRoot, "plans"), reelDirectory: join(fallbackRoot, "reels"), outputDirectory: join(fallbackRoot, "output"),
     callPlanner: async () => { cachedFallbackPlannerCalls += 1; return STARRY_NIGHT_MOCK_PLAN; },
     runExistingCommand: () => { fallbackOutputCommands += 1; },
-  }), "cached explicit fallback remains rejected");
-  equal(cachedFallbackPlannerCalls, 0, "cached fallback does not invoke the planner");
+  }), "historical cached explicit fallback remains rejected");
+  equal(cachedFallbackPlannerCalls, 0, "historical cached rejection does not invoke the planner");
 
   let compilerCommands = 0;
   await rejects(() => runReelIntegration(handoff, {

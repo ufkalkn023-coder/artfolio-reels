@@ -24,6 +24,10 @@ export class PlannerFailureError extends Error {
 
 export const classifyPlannerFailure = (error: unknown): PlannerFailureCategory => {
   if (error instanceof PlannerFailureError) return error.category;
+  if (error instanceof Error && "originalError" in error) {
+    const causeCategory = classifyPlannerFailure((error as Error & { originalError?: unknown }).originalError);
+    if (causeCategory !== PlannerFailureCategory.UNKNOWN) return causeCategory;
+  }
   if (error instanceof z.ZodError) return PlannerFailureCategory.SCHEMA_INVALID;
   if (error instanceof SyntaxError) return PlannerFailureCategory.INVALID_JSON;
   if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError" || /\b(?:timed?\s*out|timeout)\b/i.test(error.message))) {

@@ -1,4 +1,5 @@
 import { getTemplate } from "../v2/templates";
+import { type TemplateId } from "../v2/schema";
 import { type ArtworkHandoff } from "./handoff";
 import { DISTANCE_THRESHOLD, DURATION_TOLERANCE_SECONDS, type PlannedDetail, type ReelPlan } from "./reel-plan";
 
@@ -48,7 +49,7 @@ export type ReelPlanAcceptance = {
 const MAX_HOOK_WORDS = 12;
 const CLOSE_DETAIL_THRESHOLD = 0.2;
 const TRANSITION_ONLY_MAX_SECONDS = 0.75;
-const isMotion = (move: string | undefined): boolean => move !== undefined && move !== "none" && move !== "detail-hold";
+export const isCameraMotion = (move: string | undefined): boolean => move !== undefined && move !== "none" && move !== "detail-hold";
 const wordCount = (value: string): number => value.trim().split(/\s+/).filter(Boolean).length;
 const distance = (left: PlannedDetail, right: PlannedDetail): number => Math.hypot(left.focalX - right.focalX, left.focalY - right.focalY);
 
@@ -70,7 +71,28 @@ const editorialTextForScene = (
 ): string | undefined =>
   scene.kind === "overview" ? plan.centralIdea : detailForScene(scene, details, plan.details)?.observation;
 
-const maximumMotionScenes = (sceneCount: number): number => Math.max(2, Math.ceil(sceneCount / 2));
+export const getCameraMotionLimits = (sceneCount: number): {
+  allowedMaximum: number;
+  safetyTarget: number;
+} => {
+  const allowedMaximum = Math.max(2, Math.ceil(sceneCount / 2));
+  return { allowedMaximum, safetyTarget: Math.max(1, allowedMaximum - 1) };
+};
+
+export const getCameraMotionDiagnostics = (plan: Pick<ReelPlan, "scenes">): {
+  movingSceneCount: number;
+  allowedMaximum: number;
+  safetyTarget: number;
+} => {
+  const movingSceneCount = plan.scenes.filter((scene) => isCameraMotion(scene.camera?.move)).length;
+  return { movingSceneCount, ...getCameraMotionLimits(plan.scenes.length) };
+};
+
+export const plannerCameraMotionConstraintSummary = (templateIds: readonly TemplateId[]): string => templateIds.map((id) => {
+  const sceneCount = getTemplate(id).defaultScenePlan.length;
+  const { allowedMaximum, safetyTarget } = getCameraMotionLimits(sceneCount);
+  return `${id}: ${sceneCount} scenes; hard maximum ${allowedMaximum} moving scenes; safety target at most ${safetyTarget} moving scenes`;
+}).join("\n");
 
 const protectedMetadataMatches = (artwork: ArtworkHandoff, metadata: ProtectedArtworkMetadata): boolean =>
   metadata.canonicalId === artwork.canonicalId &&
@@ -171,10 +193,9 @@ export const assessReelPlanAcceptance = (
     warn(PlanWarningCode.DURATION_NEAR_MAX);
   }
 
-  const motionScenes = plan.scenes.filter((scene) => isMotion(scene.camera?.move)).length;
-  const motionLimit = maximumMotionScenes(plan.scenes.length);
-  if (motionScenes > motionLimit) reject(PlanRejectionCode.EXCESSIVE_CAMERA_MOTION);
-  else if (motionScenes === motionLimit) warn(PlanWarningCode.CAMERA_MOTION_NEAR_LIMIT);
+  const { movingSceneCount, allowedMaximum } = getCameraMotionDiagnostics(plan);
+  if (movingSceneCount > allowedMaximum) reject(PlanRejectionCode.EXCESSIVE_CAMERA_MOTION);
+  else if (movingSceneCount === allowedMaximum) warn(PlanWarningCode.CAMERA_MOTION_NEAR_LIMIT);
 
   return {
     accepted: rejectionReasons.length === 0,

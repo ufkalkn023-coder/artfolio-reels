@@ -2,13 +2,12 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { assessReelPlanAcceptance, type ReelPlanAcceptance } from "./acceptance";
+import { type MotionRepairDiagnostics, MotionRepairAttemptError, planArtwork, type PlannerCall } from "./service";
 import { localizeArtworkAsset, type LocalizedArtworkAsset } from "./assets";
 import { compileSingleArtworkPlan } from "./compiler";
 import { ArtworkHandoffSchema, type ArtworkHandoff } from "./handoff";
 import { planWithGemini } from "./gemini";
 import { artifactIdFor, writeReelArtifact } from "./pipeline";
-import { planArtwork, type PlannerCall } from "./service";
 import { type PlannerUsageTelemetry } from "./telemetry";
 import { PLANNER_VERSION } from "./config";
 import { recentMusicContextFromProductionHistory, recordProductionHistory, type ProductionHistoryStatus, type ReelProductionHistory } from "./production-history";
@@ -63,8 +62,10 @@ export type BatchCandidateAttempt = {
   plannerStatus: "PENDING" | "CACHE" | "LIVE" | "FAILED";
   cacheHit: boolean;
   acceptanceStatus: "PENDING" | "ACCEPTED" | "REJECTED";
+  initialAcceptanceReasons: string[];
   acceptanceReasons: string[];
   acceptanceWarnings: string[];
+  motionRepair?: MotionRepairDiagnostics;
   qcStatus: "PENDING" | "PASSED" | "FAILED" | "SKIPPED";
   renderStatus: "PENDING" | "PASSED" | "FAILED" | "SKIPPED";
   template?: string;
@@ -124,6 +125,10 @@ export type ReelBatchManifest = {
     qcArtifactsRetained: number;
     qcArtifactsCleaned: number;
     renderVerificationFailures: number;
+    motionRepairAttempts: number;
+    motionRepairsAccepted: number;
+    motionRepairsRejected: number;
+    repairGeminiCalls: number;
   };
   gemini: BatchTelemetry;
   timings: {
@@ -214,6 +219,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   let renderedCount = 0;
   let qcArtifactsRetained = 0;
   let qcArtifactsCleaned = 0;
+  let repairGeminiCalls = 0;
   const completionCount = (): number => options.render ? renderedCount : qcPassedCount;
   let historyWrittenCount = 0;
   let productionHistory = options.productionHistory;
@@ -279,7 +285,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       queueOrder: index + 1, canonicalId: candidate.canonicalId, artist: candidate.artist, museum: candidate.museum,
       baseScore: candidate.baseScore, portfolioPriorityScore: candidate.portfolioPriorityScore,
       handoffStatus: "PENDING", plannerStatus: "PENDING", cacheHit: false, acceptanceStatus: "PENDING",
-      acceptanceReasons: [], acceptanceWarnings: [], qcStatus: "SKIPPED", renderStatus: "SKIPPED",
+      initialAcceptanceReasons: [], acceptanceReasons: [], acceptanceWarnings: [], qcStatus: "SKIPPED", renderStatus: "SKIPPED",
     };
     attempts.push(attempt);
     if (!prepared.handoff) {
@@ -311,20 +317,31 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       attempt.plannerStatus = planned.cacheHit ? "CACHE" : "LIVE";
       attempt.cacheHit = planned.cacheHit;
       addTelemetry(telemetry, planned.telemetry, planned.cacheHit);
+      addTelemetry(telemetry, planned.repairTelemetry, false);
+      repairGeminiCalls += planned.repairTelemetry?.geminiCalls ?? 0;
       plannedCount += 1;
       timings.plannerDurationMs += elapsed(plannerStarted);
     } catch (error) {
       timings.plannerDurationMs += elapsed(plannerStarted);
       attempt.plannerStatus = "FAILED";
       attempt.errorCode = "PLANNER_FAILED";
+      if (error instanceof MotionRepairAttemptError) {
+        attempt.initialAcceptanceReasons = error.initialAcceptance.rejectionReasons;
+        attempt.motionRepair = error.motionRepair;
+        addTelemetry(telemetry, error.initialTelemetry, false);
+        telemetry.calls += 1;
+        repairGeminiCalls += 1;
+      }
       attempt.plannerFailureCategory = classifyPlannerFailure(error);
       attempt.errorMessageSafe = safeErrorMessage(error);
       continue;
     }
 
-    const acceptance: ReelPlanAcceptance = assessReelPlanAcceptance(planned.plan, { artwork: localized.artwork, isFallback: planned.fallback });
+    const acceptance = planned.acceptance;
+    attempt.initialAcceptanceReasons = planned.initialAcceptance.rejectionReasons;
     attempt.acceptanceReasons = acceptance.rejectionReasons;
     attempt.acceptanceWarnings = acceptance.warnings;
+    attempt.motionRepair = planned.motionRepair;
     attempt.template = planned.plan.template;
     attempt.duration = durationFor(planned.plan);
     attempt.musicSuggestions = planned.plan.musicSuggestions;
@@ -440,6 +457,9 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   const candidatesExhausted = finalCompletionCount < queue.target && attempts.length >= Math.min(queue.candidateCount, queue.candidateLimit);
   const shortfall = Math.max(0, queue.target - finalCompletionCount);
   const renderVerificationFailures = attempts.filter((attempt) => attempt.errorCode === "RENDER_FAILED").length;
+  const motionRepairAttempts = attempts.filter((attempt) => attempt.motionRepair?.outcome !== undefined && attempt.motionRepair.outcome !== "NOT_ATTEMPTED").length;
+  const motionRepairsAccepted = attempts.filter((attempt) => attempt.motionRepair?.outcome === "ACCEPTED").length;
+  const motionRepairsRejected = attempts.filter((attempt) => attempt.motionRepair?.outcome === "REJECTED").length;
   return {
     batchVersion: REEL_BATCH_VERSION, startedAt, finishedAt: (options.now ?? (() => new Date()))().toISOString(),
     target: queue.target, candidateLimit: queue.candidateLimit, candidateCount: queue.candidateCount,
@@ -457,6 +477,10 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       qcArtifactsRetained,
       qcArtifactsCleaned,
       renderVerificationFailures,
+      motionRepairAttempts,
+      motionRepairsAccepted,
+      motionRepairsRejected,
+      repairGeminiCalls,
     },
     gemini: telemetry, timings, candidates: attempts,
   };

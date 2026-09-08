@@ -3,10 +3,10 @@ import { extname, resolve } from "node:path";
 import { getGeminiConfig, type GeminiThinkingLevel } from "./config";
 import { type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
-import { buildGeminiPlannerPrompt } from "./prompt";
+import { buildGeminiMotionRepairPrompt, buildGeminiPlannerPrompt } from "./prompt";
 import { NewReelPlanSchema } from "./reel-plan";
 import { appendPlannerUsageTelemetry, createPlannerUsageTelemetry } from "./telemetry";
-import { type PlannerCallResult } from "./service";
+import { type PlannerCallContext, type PlannerCallResult } from "./service";
 import { PlannerFailureCategory, PlannerFailureError } from "./failure";
 import { EMPTY_RECENT_MUSIC_CONTEXT, type RecentMusicContext } from "./music-history";
 import { sanitizeDiagnostic } from "../security/redaction";
@@ -180,13 +180,25 @@ export type GeminiPlannerDependencies = {
   appendTelemetry?: (telemetry: PlannerUsageTelemetry) => Promise<void>;
 };
 
+const isPlannerCallContext = (value: PlannerCallContext | GeminiPlannerDependencies): value is PlannerCallContext =>
+  (value as { kind?: unknown }).kind === "MOTION_REPAIR";
+
 /** Called only by the planning CLI after eligibility and cache checks; never imported by render/QC paths. */
 export const planWithGemini = async (
   artwork: ArtworkHandoff,
   eligibility: ReelEligibility,
   recentMusic: RecentMusicContext = EMPTY_RECENT_MUSIC_CONTEXT,
-  dependencies: GeminiPlannerDependencies = {},
+  contextOrDependencies: PlannerCallContext | GeminiPlannerDependencies = {},
+  repairDependencies: GeminiPlannerDependencies = {},
 ): Promise<PlannerCallResult> => {
+  let repairContext: PlannerCallContext | undefined;
+  let dependencies: GeminiPlannerDependencies;
+  if (isPlannerCallContext(contextOrDependencies)) {
+    repairContext = contextOrDependencies;
+    dependencies = repairDependencies;
+  } else {
+    dependencies = contextOrDependencies;
+  }
   const { apiKey, model, thinkingLevel, timeoutMs, maxArtworkBytes, maxResponseBytes } = getGeminiConfig();
   if (!apiKey) throw new Error("GEMINI_API_KEY is required only when generating a new plan");
   const artworkPath = resolve(artwork.imagePath);
@@ -218,7 +230,9 @@ export const planWithGemini = async (
       signal: timeoutSignal,
       body: JSON.stringify({
         contents: [{ parts: [
-          { text: buildGeminiPlannerPrompt(artwork, eligibility, recentMusic) },
+          { text: repairContext
+            ? buildGeminiMotionRepairPrompt(artwork, eligibility, repairContext, recentMusic)
+            : buildGeminiPlannerPrompt(artwork, eligibility, recentMusic) },
           { inlineData: { mimeType: mimeForPath(artwork.imagePath), data: imageBytes.toString("base64") } },
         ] }],
         generationConfig: buildGeminiPlannerGenerationConfig(thinkingLevel),

@@ -87,6 +87,58 @@ const run = async (): Promise<void> => {
   equal(forced.gemini.cacheHits, 0, "forced plan bypasses cache");
   equal(forcedPlannerCalls, 1, "forced plan invokes planner once");
 
+  const excessiveMotionPlan = structuredClone(STARRY_NIGHT_MOCK_PLAN);
+  excessiveMotionPlan.scenes = excessiveMotionPlan.scenes.map((scene, index) => ({
+    ...scene,
+    camera: index < 5 ? { move: "zoom-in" as const } : { move: index === 7 ? "none" as const : "detail-hold" as const },
+  }));
+  const repairedMotionPlan = structuredClone(STARRY_NIGHT_MOCK_PLAN);
+  repairedMotionPlan.scenes = repairedMotionPlan.scenes.map((scene, index) => ({
+    ...scene,
+    camera: index < 3 ? { move: "zoom-in" as const } : { move: index === 7 ? "none" as const : "detail-hold" as const },
+  }));
+  let motionPlannerCalls = 0;
+  const motionRepaired = await runReelBatch({
+    queue: queue([candidates[0]], 1), cacheDirectory: join(root, "plans-motion-repair"), reelDirectory: join(root, "reels-motion-repair"), outputDirectory: join(root, "output-motion-repair"),
+    callPlanner: async (_artwork, _eligibility, _recentMusic, context) => {
+      motionPlannerCalls += 1;
+      return { plan: context ? repairedMotionPlan : excessiveMotionPlan, telemetry };
+    },
+    localizeArtwork: localized, runExistingCommand: () => undefined,
+  });
+  equal(motionPlannerCalls, 2, "batch uses exactly one additional planner call for motion repair");
+  equal(motionRepaired.candidates[0].initialAcceptanceReasons.join(","), "EXCESSIVE_CAMERA_MOTION", "batch retains the initial rejection reason");
+  equal(motionRepaired.candidates[0].motionRepair?.originalMovingSceneCount, 5, "batch diagnostics retain original moving-scene count");
+  equal(motionRepaired.candidates[0].motionRepair?.allowedMaximum, 4, "batch diagnostics retain allowed maximum");
+  equal(motionRepaired.candidates[0].motionRepair?.repairedMovingSceneCount, 3, "batch diagnostics retain repaired moving-scene count");
+  equal(motionRepaired.candidates[0].motionRepair?.outcome, "ACCEPTED", "batch diagnostics retain repair outcome");
+  equal(motionRepaired.gemini.calls, 2, "batch telemetry includes original and repair Gemini calls");
+  equal(motionRepaired.operationalSummary.motionRepairAttempts, 1, "batch summary counts repair attempts");
+  equal(motionRepaired.operationalSummary.motionRepairsAccepted, 1, "batch summary counts accepted repairs");
+  equal(motionRepaired.operationalSummary.motionRepairsRejected, 0, "batch summary distinguishes rejected repairs");
+  equal(motionRepaired.operationalSummary.repairGeminiCalls, 1, "batch summary counts Gemini calls attributable to repair");
+
+  let failedMotionRepairCalls = 0;
+  const failedMotionRepairCall = await runReelBatch({
+    queue: queue([candidates[0]], 1), cacheDirectory: join(root, "plans-motion-repair-call-failed"), reelDirectory: join(root, "reels-motion-repair-call-failed"), outputDirectory: join(root, "output-motion-repair-call-failed"),
+    callPlanner: async (_artwork, _eligibility, _recentMusic, context) => {
+      failedMotionRepairCalls += 1;
+      if (context) throw new PlannerFailureError(PlannerFailureCategory.API_ERROR, "Gemini repair request failed");
+      return { plan: excessiveMotionPlan, telemetry };
+    },
+    localizeArtwork: localized, runExistingCommand: () => undefined,
+  });
+  equal(failedMotionRepairCalls, 2, "failed motion repair call is attempted exactly once");
+  equal(failedMotionRepairCall.candidates[0].plannerFailureCategory, "API_ERROR", "failed repair preserves its planner failure category");
+  equal(failedMotionRepairCall.candidates[0].motionRepair?.outcome, "REJECTED", "failed repair call records a rejected repair outcome");
+  equal(failedMotionRepairCall.candidates[0].motionRepair?.originalMovingSceneCount, 5, "failed repair call retains original moving-scene count");
+  equal(failedMotionRepairCall.candidates[0].motionRepair?.allowedMaximum, 4, "failed repair call retains allowed maximum");
+  equal(failedMotionRepairCall.candidates[0].motionRepair?.repairedMovingSceneCount, undefined, "failed repair call has no invented repaired count");
+  equal(failedMotionRepairCall.operationalSummary.motionRepairAttempts, 1, "failed repair call is included in attempt diagnostics");
+  equal(failedMotionRepairCall.operationalSummary.motionRepairsRejected, 1, "failed repair call is included in rejected diagnostics");
+  equal(failedMotionRepairCall.operationalSummary.repairGeminiCalls, 1, "failed repair call is counted as repair Gemini work");
+  equal(failedMotionRepairCall.gemini.calls, 2, "failed repair call remains visible in aggregate Gemini call count");
+
   const commands: string[] = [];
   const missingHandoff: BatchCandidate = {
     canonicalId: "batch-missing", handoffPath: join(root, "does-not-exist.json"), baseScore: 99, portfolioPriorityScore: 99,
