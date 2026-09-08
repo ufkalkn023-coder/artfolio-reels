@@ -39,7 +39,8 @@
     "test:visual": "tsx scripts/test-visual.ts",
     "lint": "eslint --no-ignore src scripts tests eslint.config.mjs --ext .ts,.tsx,.js,.mjs",
     "validate": "npm run typecheck && npm run lint && npm run test",
-    "reels:repair": "tsx scripts/reels-repair.ts"
+    "reels:repair": "tsx scripts/reels-repair.ts",
+    "reels:auto": "tsx scripts/reels-auto.ts"
   },
   "sideEffects": false
 }
