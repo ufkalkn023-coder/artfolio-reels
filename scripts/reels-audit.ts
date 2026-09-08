@@ -22,7 +22,7 @@ const main = async (): Promise<void> => {
   console.log(`missing_renders=${report.summary.missingRenders} invalid_renders=${report.summary.invalidRenders} releases=${report.summary.releases} valid_releases=${report.summary.validReleases}`);
   console.log(`orphan_renders=${report.orphans.renders.length} orphan_social=${report.orphans.socialCopies.length} complete=${report.summary.complete}`);
   for (const item of report.items.filter((candidate) => !candidate.states.includes("COMPLETE"))) {
-    console.log(`${item.reelId}: ${item.states.join(",") || "UNTRACKED_PARTIAL"}`);
+    console.log(`${item.reelId}: ${item.states.join(",")}`);
   }
   for (const warning of report.warnings) console.log(`warning: ${warning}`);
 };

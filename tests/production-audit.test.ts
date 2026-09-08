@@ -62,6 +62,11 @@ const main = async (): Promise<void> => {
     await mkdir(join(qcDirectory, id), { recursive: true });
     await writeFile(join(qcDirectory, id, "contact-sheet.png"), "qc");
   }
+
+  const untrackedId = "audit-untracked-fixture";
+  await mkdir(join(qcDirectory, untrackedId), { recursive: true });
+  await writeFile(join(qcDirectory, untrackedId, "contact-sheet.png"), "qc");
+
   const historyPath = join(root, "data", "reel-production-history.json");
   const history = {
     version: "reel-production-history-v1",
@@ -87,6 +92,8 @@ const main = async (): Promise<void> => {
   truthy(byId.get("audit-invalid")?.states.includes("INVALID_RENDER"), "invalid MP4 metadata is reported from the shared verifier");
   truthy(byId.get("audit-no-reel")?.states.includes("MISSING_REELDATA"), "missing ReelData is reported");
   truthy(byId.get("audit-no-social")?.states.includes("MISSING_SOCIAL_COPY"), "missing social copy is reported");
+  truthy(byId.get(untrackedId)?.states.includes("UNTRACKED_PARTIAL"), "untracked fixture artifacts are classified separately from production failures");
+  truthy(!byId.get(untrackedId)?.states.includes("MISSING_REELDATA"), "untracked fixture artifacts do not report production ReelData failures");
   equal(report.orphans.renders.length, 1, "orphan MP4 is detected");
   truthy(report.orphans.renders[0].endsWith("orphan-artwork.mp4"), "orphan MP4 path is preserved");
   JSON.parse(JSON.stringify(report));

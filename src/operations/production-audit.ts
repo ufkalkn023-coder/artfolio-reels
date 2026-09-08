@@ -21,7 +21,8 @@ export type ProductionAuditState =
   | "MISSING_SOCIAL_COPY"
   | "MISSING_QC"
   | "RELEASE_MISSING"
-  | "RELEASE_INVALID";
+  | "RELEASE_INVALID"
+  | "UNTRACKED_PARTIAL";
 
 export type ProductionAuditItem = {
   reelId: string;
@@ -203,7 +204,13 @@ export const auditProduction = async (options: ProductionAuditOptions = {}): Pro
     if (hasOnlyReel) states.push("REELDATA_ONLY");
     if (hasOnlyRender) states.push("RENDER_ONLY");
     if (hasHistoryAndRender) states.push("HISTORY_AND_RENDER");
-    if ((history || renderPath || qcPath || releasePath) && !reelRecord) states.push("MISSING_REELDATA");
+    if (history && !reelRecord) states.push("MISSING_REELDATA");
+
+    const hasUntrackedArtifacts =
+      !history &&
+      Boolean(reelRecord || renderPath || socialPath || qcPath || releasePath);
+
+    if (hasUntrackedArtifacts) states.push("UNTRACKED_PARTIAL");
     if (reelRecord?.error) {
       states.push("INVALID_REELDATA");
       errors.push(`ReelData: ${reelRecord.error}`);
