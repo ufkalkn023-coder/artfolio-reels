@@ -6,10 +6,15 @@ import { z } from "zod";
  */
 export const RightsStatusSchema = z.literal("CONFIRMED_PUBLIC_DOMAIN");
 
+const MAX_HANDOFF_TITLE_LENGTH = 72;
+const normalizeHandoffTitle = (title: string): string => title.length <= MAX_HANDOFF_TITLE_LENGTH
+  ? title
+  : `${title.slice(0, MAX_HANDOFF_TITLE_LENGTH - 1).trimEnd()}…`;
+
 export const ArtworkHandoffSchema = z.object({
   canonicalId: z.string().trim().min(1).max(120),
   source: z.string().trim().min(1).max(48),
-  title: z.string().trim().min(1).max(72),
+  title: z.string().trim().min(1).transform(normalizeHandoffTitle).pipe(z.string().max(MAX_HANDOFF_TITLE_LENGTH)),
   artist: z.string().trim().min(1).max(72),
   date: z.string().trim().min(1).max(36),
   medium: z.string().trim().min(1).max(120),
