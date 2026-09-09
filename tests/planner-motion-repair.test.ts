@@ -202,14 +202,23 @@ const run = async (): Promise<void> => {
   const historicalCache = await mkdtemp(join(tmpdir(), "artfolio-motion-repair-historical-"));
   await writeCachedPlan(historicalCache, STARRY_NIGHT_HANDOFF, excessivePlan);
   let historicalCalls = 0;
+  let historicalRepairRequested = false;
   const historical = await planArtwork(STARRY_NIGHT_HANDOFF, {
     cacheDirectory: historicalCache,
-    callPlanner: async () => { historicalCalls += 1; throw new Error("historical cache must not call Gemini"); },
+    callPlanner: async (_artwork, _eligibility, _recentMusic, context) => {
+      historicalCalls += 1;
+      if (context) historicalRepairRequested = true;
+      return STARRY_NIGHT_MOCK_PLAN;
+    },
   });
-  equal(historical.cacheHit, true, "historical rejected plan remains a cache hit");
-  equal(historicalCalls, 0, "historical rejected cache triggers no planner or repair call");
-  equal(historical.acceptance.accepted, false, "historical rejected cache still reaches the normal gate");
-  equal(historical.motionRepair.outcome, "NOT_ATTEMPTED", "historical cache explicitly reports no repair");
+  equal(historical.cacheHit, false, "motion-only rejected historical cache falls through to live planning");
+  equal(historicalCalls, 1, "motion-only rejected historical cache makes one live planner call");
+  equal(historicalRepairRequested, false, "historical cached rejection never receives motion repair");
+  equal(historical.acceptance.accepted, true, "accepted live plan replaces the rejected historical result");
+  equal(JSON.stringify(historical.plan), JSON.stringify(STARRY_NIGHT_MOCK_PLAN), "accepted live plan is returned");
+  const refreshedHistorical = await readCachedPlan(historicalCache, STARRY_NIGHT_HANDOFF, eligibility);
+  equal(refreshedHistorical.status, PlanCacheStatus.HIT, "accepted live plan is cached through normal cache semantics");
+  truthy(refreshedHistorical.status === PlanCacheStatus.HIT && JSON.stringify(refreshedHistorical.value.plan) === JSON.stringify(STARRY_NIGHT_MOCK_PLAN), "cached historical entry is replaced by the accepted live plan");
 
   console.log("Planner motion contract and one-shot repair tests passed");
 };

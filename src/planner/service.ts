@@ -114,10 +114,12 @@ export const planArtwork = async (artwork: ArtworkHandoff, options: PlanArtworkO
         originalMovingSceneCount: motion.movingSceneCount,
         allowedMaximum: motion.allowedMaximum,
       };
-      logMotionDiagnostics(artwork, acceptance, motionRepair);
-      return { plan: cached.value.plan, eligibility, cacheHit: true, fallback: cached.value.fallback, initialAcceptance: acceptance, acceptance, motionRepair };
+      if (!isMotionOnlyRejection(acceptance)) {
+        logMotionDiagnostics(artwork, acceptance, motionRepair);
+        return { plan: cached.value.plan, eligibility, cacheHit: true, fallback: cached.value.fallback, initialAcceptance: acceptance, acceptance, motionRepair };
+      }
     }
-    if (cached.status !== PlanCacheStatus.MISS) {
+    if (cached.status !== PlanCacheStatus.MISS && cached.status !== PlanCacheStatus.HIT) {
       throw new PlanCacheReadError(cached.status, cached.path, cached.reason);
     }
   }
