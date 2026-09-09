@@ -85,26 +85,63 @@ await withEnvironment({
 
 await withEnvironment({
   GEMINI_API_KEY: "test-api-key",
-  ARTFOLIO_GEMINI_TIMEOUT_MS: "5",
   ARTFOLIO_GEMINI_MAX_ARTWORK_BYTES: "1024",
   ARTFOLIO_GEMINI_MAX_RESPONSE_BYTES: "65536",
 }, async () => {
-  const timeoutError = await rejects(() => planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
-    stat: async () => ({ size: 4 }),
-    readFile: async () => Buffer.from("image"),
-    fetch: (_input, init) => new Promise((_resolve, reject) => {
-      const signal = init?.signal;
-      const keepAlive = setTimeout(() => reject(new Error("timeout signal did not abort")), 100);
-      const abort = (): void => {
-        clearTimeout(keepAlive);
-        reject(signal?.reason ?? Object.assign(new Error("aborted"), { name: "AbortError" }));
-      };
-      if (signal?.aborted) abort();
-      else signal?.addEventListener("abort", abort, { once: true });
-    }),
-    appendTelemetry: async () => undefined,
-  }), "Gemini timeout");
-  equal(classifyPlannerFailure(timeoutError), PlannerFailureCategory.TIMEOUT, "Gemini timeout has a distinct failure category");
+  const originalTimeout = AbortSignal.timeout;
+  let timeoutMs = 0;
+  let advanceTimeout = (elapsedMs: number): void => { void elapsedMs; };
+  AbortSignal.timeout = (delay: number): AbortSignal => {
+    const controller = new AbortController();
+    timeoutMs = delay;
+    advanceTimeout = (elapsedMs) => {
+      if (elapsedMs >= delay && !controller.signal.aborted) controller.abort();
+    };
+    return controller.signal;
+  };
+  try {
+    let resolveRequest: (response: Response) => void = () => undefined;
+    let requestSignal: AbortSignal | undefined;
+    const completesAfterSixtySeconds = planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
+      stat: async () => ({ size: 4 }),
+      readFile: async () => Buffer.from("image"),
+      fetch: (_input, init) => new Promise((resolve) => {
+        requestSignal = init?.signal ?? undefined;
+        truthy(!requestSignal?.aborted, "planner request is not aborted at start");
+        resolveRequest = resolve;
+      }),
+      appendTelemetry: async () => undefined,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    equal(timeoutMs, 120_000, "Gemini timeout is 120 seconds");
+    advanceTimeout(60_000);
+    truthy(!requestSignal?.aborted, "request remains active after 60 seconds");
+    resolveRequest(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(STARRY_NIGHT_MOCK_PLAN) }] } }], usageMetadata: {} }), { status: 200 }));
+    await completesAfterSixtySeconds;
+
+    const timeoutOperation = planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
+      stat: async () => ({ size: 4 }),
+      readFile: async () => Buffer.from("image"),
+      fetch: (_input, init) => new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        requestSignal = signal ?? undefined;
+        const abort = (): void => reject(signal?.reason ?? Object.assign(new Error("aborted"), { name: "AbortError" }));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      }),
+      appendTelemetry: async () => undefined,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    advanceTimeout(120_000);
+    const timeoutError = await rejects(() => timeoutOperation, "Gemini timeout");
+    const classifiedTimeout = await timeoutError;
+    truthy(requestSignal?.aborted, "request is aborted after 120 seconds");
+    equal(classifyPlannerFailure(classifiedTimeout), PlannerFailureCategory.TIMEOUT, "Gemini timeout has a distinct failure category");
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
 });
 
 await withEnvironment({

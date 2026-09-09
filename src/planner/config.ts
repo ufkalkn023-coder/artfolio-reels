@@ -9,7 +9,7 @@ export const GEMINI_DEFAULT_MODEL = "gemini-3.7-flash";
 export const GEMINI_THINKING_LEVELS = ["low", "medium", "high"] as const;
 export type GeminiThinkingLevel = (typeof GEMINI_THINKING_LEVELS)[number];
 export const GEMINI_DEFAULT_THINKING_LEVEL: GeminiThinkingLevel = "high";
-export const GEMINI_DEFAULT_TIMEOUT_MS = 60_000;
+export const GEMINI_DEFAULT_TIMEOUT_MS = 120_000;
 export const GEMINI_DEFAULT_MAX_ARTWORK_BYTES = 20 * 1024 * 1024;
 export const GEMINI_DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
