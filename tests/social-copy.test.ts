@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { runReelBatch, type BatchCandidateQueue } from "../src/planner/batch";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
 import { resolveRenderOutputPath } from "../src/planner/render-path";
+import { packageRelease as packageExistingRelease, verifyReleasePackage as verifyExistingRelease } from "../src/release/package";
 import { type ReelPlan } from "../src/planner/reel-plan";
 import {
   MAX_METADATA_HASHTAG_LENGTH,
@@ -172,6 +173,10 @@ const run = async (): Promise<void> => {
   const qcFailed = await makeCandidate("social-qc-failed");
   const rejected = await makeCandidate("social-rejected");
   const outputDirectory = join(root, "output");
+  const releaseStubs = {
+    packageRelease: async (options: Parameters<typeof packageExistingRelease>[0]) => ({ directory: join(options.outputDirectory ?? "output", "releases", options.reelId) }) as Awaited<ReturnType<typeof packageExistingRelease>>,
+    verifyReleasePackage: async (options: Parameters<typeof verifyExistingRelease>[0]) => ({ valid: true, directory: options.releaseDirectory, errors: [] }),
+  };
   const queue: BatchCandidateQueue = {
     target: 4,
     candidateLimit: 4,
@@ -198,6 +203,7 @@ const run = async (): Promise<void> => {
       if (name === "render" && reelId === renderFailed.handoff.canonicalId) throw new Error("render failed");
       if (name === "qc" && reelId === qcFailed.handoff.canonicalId) throw new Error("QC failed");
     },
+    ...releaseStubs,
   });
   const successPath = resolveSocialOutputPath(successful.handoff.canonicalId, successful.handoff.title, outputDirectory);
   truthy((await readFile(successPath, "utf8")).includes(STARRY_NIGHT_MOCK_PLAN.hook.text), "successful batch render creates ready-to-paste social copy");
@@ -256,6 +262,7 @@ const run = async (): Promise<void> => {
       if (artwork.canonicalId === writeFailure.handoff.canonicalId) throw new Error("social disk unavailable");
       return join(socialFallbackOutputDirectory, "social", `${artwork.canonicalId}.txt`);
     },
+    ...releaseStubs,
   });
   equal(socialFallbackManifest.renderedCount, 2, "both candidates retain verified render evidence");
   equal(socialFallbackManifest.completionCount, 1, "only the candidate with social copy counts toward terminal completion");

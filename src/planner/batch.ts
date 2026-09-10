@@ -16,6 +16,7 @@ import { PlannerFailureCategory, classifyPlannerFailure, type PlannerFailureCate
 import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
 import { type MusicSuggestions } from "./reel-plan";
 import { enrichCompletedReelWithAfm, hasUsableAfmMusic, type CompletedReelMusicEnricher } from "../music/enrichment";
+import { packageRelease, verifyReleasePackage } from "../release/package";
 import { sanitizeDiagnostic } from "../security/redaction";
 
 export const REEL_BATCH_VERSION = "reel-batch-v1" as const;
@@ -74,13 +75,14 @@ export type BatchCandidateAttempt = {
   qcPath?: string;
   renderPath?: string;
   socialPath?: string;
+  releasePath?: string;
   musicSuggestions?: MusicSuggestions;
   musicTrackId?: string;
   musicSubfamily?: string;
   musicWarning?: string;
   historyStatus?: ProductionHistoryStatus;
   plannerFailureCategory?: PlannerFailureCategoryValue;
-  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "MUSIC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED" | "HISTORY_WRITE_FAILED";
+  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "MUSIC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED" | "HISTORY_WRITE_FAILED" | "PACKAGE_FAILED" | "RELEASE_VERIFICATION_FAILED";
   errorMessageSafe?: string;
 };
 
@@ -105,7 +107,7 @@ export type ReelBatchManifest = {
   acceptedCount: number;
   qcPassedCount: number;
   renderedCount: number;
-  completionBasis: "QC_PASSED" | "RENDERED";
+  completionBasis: "QC_PASSED" | "VERIFIED_RELEASE";
   completionCount: number;
   historyLoadedCount: number;
   historyWrittenCount: number;
@@ -158,6 +160,8 @@ export type RunReelBatchOptions = {
   batchId?: string;
   writeSocialCopy?: SocialCopyWriter;
   enrichMusic?: CompletedReelMusicEnricher;
+  packageRelease?: typeof packageRelease;
+  verifyReleasePackage?: typeof verifyReleasePackage;
 };
 
 const elapsed = (started: number): number => Math.round(performance.now() - started);
@@ -210,6 +214,8 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   const runCommand = options.runExistingCommand ?? defaultExistingCommand;
   const localize = options.localizeArtwork ?? localizeArtworkAsset;
   const writeSocial = options.writeSocialCopy ?? writeSocialCopy;
+  const packageReel = options.packageRelease ?? packageRelease;
+  const verifyRelease = options.verifyReleasePackage ?? verifyReleasePackage;
   const telemetry = emptyTelemetry();
   const timings = { selectionDurationMs: 0, handoffDurationMs: 0, plannerDurationMs: 0, qcDurationMs: 0, renderDurationMs: 0, totalDurationMs: 0 };
   const attempts: BatchCandidateAttempt[] = [];
@@ -217,6 +223,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   let acceptedCount = 0;
   let qcPassedCount = 0;
   let renderedCount = 0;
+  let releasedCount = 0;
   let terminalSuccessCount = 0;
   let qcArtifactsRetained = 0;
   let qcArtifactsCleaned = 0;
@@ -454,7 +461,25 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
         attempt.errorCode = "HISTORY_WRITE_FAILED";
         attempt.errorMessageSafe = safeErrorMessage(error);
       }
-      if (socialCopySucceeded && historyWriteSucceeded) terminalSuccessCount += 1;
+      if (!socialCopySucceeded || !historyWriteSucceeded) continue;
+      try {
+        const release = await packageReel({ reelId, outputDirectory, reelDirectory });
+        attempt.releasePath = release.directory;
+      } catch (error) {
+        attempt.errorCode = "PACKAGE_FAILED";
+        attempt.errorMessageSafe = safeErrorMessage(error);
+        continue;
+      }
+      try {
+        const verification = await verifyRelease({ releaseDirectory: attempt.releasePath, reelDirectory, deep: true });
+        if (!verification.valid) throw new Error(`Release verification failed: ${verification.errors.join("; ")}`);
+      } catch (error) {
+        attempt.errorCode = "RELEASE_VERIFICATION_FAILED";
+        attempt.errorMessageSafe = safeErrorMessage(error);
+        continue;
+      }
+      releasedCount += 1;
+      terminalSuccessCount += 1;
     } catch (error) {
       timings.renderDurationMs += elapsed(renderStarted);
       attempt.renderStatus = "FAILED";
@@ -471,7 +496,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
     return counts;
   }, {});
   const finalCompletionCount = completionCount();
-  const completionBasis = options.render ? "RENDERED" : "QC_PASSED";
+  const completionBasis = options.render ? "VERIFIED_RELEASE" : "QC_PASSED";
   const candidatesExhausted = finalCompletionCount < queue.target && attempts.length >= Math.min(queue.candidateCount, queue.candidateLimit);
   const shortfall = Math.max(0, queue.target - finalCompletionCount);
   const renderVerificationFailures = attempts.filter((attempt) => attempt.errorCode === "RENDER_FAILED").length;
@@ -489,7 +514,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       accepted: acceptedCount,
       qcPassed: qcPassedCount,
       rendered: renderedCount,
-      released: 0,
+      released: releasedCount,
       failed: failedCount,
       shortfall,
       qcArtifactsRetained,

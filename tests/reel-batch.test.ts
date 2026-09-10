@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rmdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runReelBatch, writeBatchManifest, type BatchCandidate, type BatchCandidateQueue } from "../src/planner/batch";
@@ -9,6 +9,8 @@ import { loadReelProductionHistory } from "../src/planner/production-history";
 import { PlannerFailureCategory, PlannerFailureError } from "../src/planner/failure";
 import { resolveRenderOutputPath } from "../src/planner/render-path";
 import { ReelDataSchema, type ReelData } from "../src/v2/schema";
+import { packageRelease as packageExistingRelease, verifyReleasePackage as verifyExistingRelease, type ReleaseMediaVerifier } from "../src/release/package";
+import { resolveSocialOutputPath } from "../src/social/social-copy";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -19,6 +21,10 @@ const enrichWithAfmMusic = async (reel: ReelData) => ({
     ...reel,
     music: { src: "reel-audio/AFM-DE03-07.wav", trackId: "AFM-DE03-07", subfamily: "DE03", volume: 0.18, start: 0, durationSeconds: 120, fadeIn: 0.6, fadeOut: 1.5 },
   }),
+  selection: {
+    track: { id: "AFM-DE03-07", subfamilyCode: "DE03" },
+    score: { total: 1 },
+  } as never,
 });
 
 const run = async (): Promise<void> => {
@@ -37,6 +43,34 @@ const run = async (): Promise<void> => {
     canonicalArtworkId: "batch", model: "gemini-3.7-flash", thinkingLevel: "high", requestDurationMs: 17,
     usage: { promptTokenCount: 10, candidatesTokenCount: 20, thoughtsTokenCount: 30 }, timestamp: "2026-08-23T00:00:00.000Z",
   });
+  const verifyReleaseMedia: ReleaseMediaVerifier = async (path, expectations, options = {}) => ({
+    path,
+    sizeBytes: (await stat(path)).size,
+    durationSeconds: expectations.durationSeconds,
+    video: { codec: "h264", width: 1080, height: 1920, fps: 30 },
+    ...(expectations.requireAudio ? { audio: { codec: "aac" } } : {}),
+    deep: options.deep ?? false,
+  });
+  const writeReleaseArtifacts = async (name: "qc" | "render", reelId: string, outputDirectory: string): Promise<void> => {
+    if (name === "qc") {
+      const qcPath = join(outputDirectory, "qc", reelId, "contact-sheet.png");
+      await mkdir(dirname(qcPath), { recursive: true });
+      await writeFile(qcPath, "contact sheet");
+      return;
+    }
+    const renderPath = resolveRenderOutputPath(reelId, STARRY_NIGHT_HANDOFF.title, outputDirectory);
+    await mkdir(dirname(renderPath), { recursive: true });
+    await writeFile(renderPath, "verified video");
+  };
+  const writeReleaseSocialCopy = async (artwork: typeof STARRY_NIGHT_HANDOFF, outputDirectory: string): Promise<string> => {
+    const socialPath = resolveSocialOutputPath(artwork.canonicalId, artwork.title, outputDirectory);
+    await mkdir(dirname(socialPath), { recursive: true });
+    await writeFile(socialPath, "Canonical caption\n\nMUSIC SUGGESTIONS\n-----------------\n\n1. Artist — Song\n");
+    return socialPath;
+  };
+  const packageReleaseStub = async (options: Parameters<typeof packageExistingRelease>[0]) => ({ directory: join(options.outputDirectory ?? "output", "releases", options.reelId) }) as Awaited<ReturnType<typeof packageExistingRelease>>;
+  const verifyReleaseStub = async (options: Parameters<typeof verifyExistingRelease>[0]) => ({ valid: true, directory: options.releaseDirectory, errors: [] });
+  const releaseStubs = { packageRelease: packageReleaseStub, verifyReleasePackage: verifyReleaseStub };
 
   let plannerCalls = 0;
   const full = await runReelBatch({
@@ -215,11 +249,12 @@ const run = async (): Promise<void> => {
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
     enrichMusic: enrichWithAfmMusic,
     runExistingCommand: (name, reelId) => { renders.push(`${name}:${reelId}`); if (name === "render" && reelId === "batch-1") throw new Error("render failure"); },
+    ...releaseStubs,
   });
   equal(rendered.qcPassedCount, 2, "render failures do not alter QC completion");
   equal(rendered.renderedCount, 1, "rendered count remains independent");
-  equal(rendered.completionBasis, "RENDERED", "render mode completion is based on successful renders");
-  equal(rendered.completionCount, 1, "render shortfall reports successful render count");
+  equal(rendered.completionBasis, "VERIFIED_RELEASE", "render mode completion is based on verified releases");
+  equal(rendered.completionCount, 1, "render shortfall reports successful verified release count");
   equal(rendered.outcome, "SHORTFALL", "QC target cannot make a render-short batch complete");
   equal(rendered.candidates[0].errorCode, "RENDER_FAILED", "render failure is isolated");
   equal(rendered.operationalSummary.renderVerificationFailures, 1, "batch operational summary counts render-stage verification failures");
@@ -231,6 +266,7 @@ const run = async (): Promise<void> => {
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
     enrichMusic: enrichWithAfmMusic,
     runExistingCommand: (name, reelId) => { if (name === "render" && reelId === "batch-1") throw new Error("render failure"); },
+    ...releaseStubs,
   });
   equal(mixedRender.qcPassedCount, 3, "render mode continues beyond the QC target after failure");
   equal(mixedRender.renderedCount, 2, "mixed render batch reaches the requested render target");
@@ -259,6 +295,7 @@ const run = async (): Promise<void> => {
     queue: queue([candidates[0]], 1, 1), render: true, cacheDirectory: join(root, "plans-history-render"), reelDirectory: join(root, "reels-history-render"), outputDirectory: join(root, "output-history-render"),
     productionHistory: await loadReelProductionHistory(historyPath), productionHistoryPath: historyPath, batchId: "history-render-batch",
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, enrichMusic: enrichWithAfmMusic, runExistingCommand: () => undefined,
+    ...releaseStubs,
   });
   equal(renderHistory.candidates[0].historyStatus, "RENDERED", "render completion upgrades history");
   equal((await loadReelProductionHistory(historyPath)).entries[0].status, "RENDERED", "rendered status persists");
@@ -282,6 +319,7 @@ const run = async (): Promise<void> => {
       else await rmdir(historyTerminalFailurePath);
       return join(historyTerminalFailureOutputDirectory, "social", `${artwork.canonicalId}.txt`);
     },
+    ...releaseStubs,
   });
   equal(historyTerminalFailure.renderedCount, 2, "history write failure preserves both verified renders");
   equal(historyTerminalFailure.completionCount, 1, "history write failure does not increment terminal completion");
@@ -311,6 +349,71 @@ const run = async (): Promise<void> => {
   equal(historyShortfall.completionCount, 0, "history write failure cannot satisfy terminal completion");
   equal(historyShortfall.outcome, "SHORTFALL", "history write failure yields shortfall when no fallback candidate exists");
   equal(historyShortfall.candidates[0].renderStatus, "PASSED", "history shortfall preserves render status");
+
+  const packageWithVerifiedMedia = async (options: Parameters<typeof packageExistingRelease>[0]) => packageExistingRelease({ ...options, verifyMedia: verifyReleaseMedia });
+  const verifyPackageWithVerifiedMedia = async (options: Parameters<typeof verifyExistingRelease>[0]) => verifyExistingRelease({ ...options, verifyMedia: verifyReleaseMedia });
+  const releaseOutputDirectory = join(root, "output-release-success");
+  const releaseReelDirectory = join(root, "reels-release-success");
+  const released = await runReelBatch({
+    queue: queue([candidates[0]], 1, 1), render: true, cacheDirectory: join(root, "plans-release-success"), reelDirectory: releaseReelDirectory, outputDirectory: releaseOutputDirectory,
+    productionHistory: await loadReelProductionHistory(join(root, "history-release-success.json")), productionHistoryPath: join(root, "history-release-success.json"), batchId: "release-success",
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, enrichMusic: enrichWithAfmMusic,
+    runExistingCommand: (name, reelId) => writeReleaseArtifacts(name, reelId, releaseOutputDirectory),
+    writeSocialCopy: (artwork) => writeReleaseSocialCopy(artwork, releaseOutputDirectory),
+    ...{ packageRelease: packageWithVerifiedMedia, verifyReleasePackage: verifyPackageWithVerifiedMedia },
+  });
+  equal(released.completionCount, 1, "verified release increments terminal completion");
+  equal(released.operationalSummary.released, 1, "verified release increments released count");
+  equal(released.outcome, "COMPLETE", "verified release completes a target of one");
+  const releaseDirectory = join(releaseOutputDirectory, "releases", "batch-1");
+  for (const file of ["reel.mp4", "caption.txt", "metadata.json", "manifest.json"]) await readFile(join(releaseDirectory, file));
+  equal(JSON.parse(await readFile(join(releaseDirectory, "metadata.json"), "utf8")).musicTrackId, "AFM-DE03-07", "release package preserves AFM identity");
+
+  const packageFailureOutputDirectory = join(root, "output-release-package-failure");
+  const packageFailureReelDirectory = join(root, "reels-release-package-failure");
+  const packageFailure = await runReelBatch({
+    queue: queue(candidates.slice(1, 3), 2, 2), render: true, cacheDirectory: join(root, "plans-release-package-failure"), reelDirectory: packageFailureReelDirectory, outputDirectory: packageFailureOutputDirectory,
+    productionHistory: await loadReelProductionHistory(join(root, "history-release-package-failure.json")), productionHistoryPath: join(root, "history-release-package-failure.json"), batchId: "release-package-failure",
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, enrichMusic: enrichWithAfmMusic,
+    runExistingCommand: (name, reelId) => writeReleaseArtifacts(name, reelId, packageFailureOutputDirectory),
+    writeSocialCopy: (artwork) => writeReleaseSocialCopy(artwork, packageFailureOutputDirectory),
+    ...{
+      packageRelease: async (options: Parameters<typeof packageExistingRelease>[0]) => {
+        if (options.reelId === "batch-2") throw new Error("package storage failure");
+        return packageWithVerifiedMedia(options);
+      },
+      verifyReleasePackage: verifyPackageWithVerifiedMedia,
+    },
+  });
+  equal(packageFailure.completionCount, 1, "package failure does not count toward terminal completion");
+  equal(packageFailure.operationalSummary.released, 1, "fallback verified release is counted");
+  equal(packageFailure.outcome, "SHORTFALL", "package failure leaves a shortfall when the fallback cannot meet target");
+  equal(packageFailure.candidates.length, 2, "package failure continues to the fallback candidate");
+  equal(packageFailure.candidates[0].errorCode, "PACKAGE_FAILED", "package failure is classified after render and history");
+  equal(await readFile(resolveRenderOutputPath("batch-2", STARRY_NIGHT_HANDOFF.title, packageFailureOutputDirectory), "utf8"), "verified video", "package failure preserves verified render evidence");
+
+  const deepFailureOutputDirectory = join(root, "output-release-deep-failure");
+  const deepFailureReelDirectory = join(root, "reels-release-deep-failure");
+  const deepVerificationFailure = await runReelBatch({
+    queue: queue([candidates[3]], 1, 1), render: true, cacheDirectory: join(root, "plans-release-deep-failure"), reelDirectory: deepFailureReelDirectory, outputDirectory: deepFailureOutputDirectory,
+    productionHistory: await loadReelProductionHistory(join(root, "history-release-deep-failure.json")), productionHistoryPath: join(root, "history-release-deep-failure.json"), batchId: "release-deep-failure",
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, enrichMusic: enrichWithAfmMusic,
+    runExistingCommand: (name, reelId) => writeReleaseArtifacts(name, reelId, deepFailureOutputDirectory),
+    writeSocialCopy: (artwork) => writeReleaseSocialCopy(artwork, deepFailureOutputDirectory),
+    ...{
+      packageRelease: packageWithVerifiedMedia,
+      verifyReleasePackage: async (options: Parameters<typeof verifyExistingRelease>[0]) => {
+        await writeFile(join(options.releaseDirectory, "caption.txt"), "tampered caption");
+        return verifyPackageWithVerifiedMedia(options);
+      },
+    },
+  });
+  equal(deepVerificationFailure.completionCount, 0, "invalid deep verification does not count toward terminal completion");
+  equal(deepVerificationFailure.operationalSummary.released, 0, "invalid deep verification does not increment released count");
+  equal(deepVerificationFailure.outcome, "SHORTFALL", "invalid deep verification cannot report COMPLETE");
+  equal(deepVerificationFailure.candidates[0].errorCode, "RELEASE_VERIFICATION_FAILED", "invalid deep verification is classified after packaging");
+  equal(await readFile(resolveRenderOutputPath("batch-4", STARRY_NIGHT_HANDOFF.title, deepFailureOutputDirectory), "utf8"), "verified video", "invalid deep verification preserves verified render evidence");
+
   const failedRenderHistory = await runReelBatch({
     queue: queue([candidates[1]], 1, 1), render: true, cacheDirectory: join(root, "plans-history-render-failure"), reelDirectory: join(root, "reels-history-render-failure"), outputDirectory: join(root, "output-history-render-failure"),
     productionHistory: await loadReelProductionHistory(historyPath), productionHistoryPath: historyPath, batchId: "history-render-failure",
