@@ -10,7 +10,7 @@ import { resolveRenderOutputPath } from "./render-path";
 import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
 import { emptyReelProductionHistory, recentMusicContextFromProductionHistory, recordProductionHistory, type ReelProductionHistory } from "./production-history";
 import { PLANNER_VERSION } from "./config";
-import { enrichCompletedReelWithAfm, type CompletedReelMusicEnricher } from "../music/enrichment";
+import { enrichCompletedReelWithAfm, hasUsableAfmMusic, type CompletedReelMusicEnricher } from "../music/enrichment";
 
 export type ExistingCommand = (name: "qc" | "render", reelId: string) => void;
 
@@ -72,6 +72,9 @@ export const runReelIntegration = async (
   }
   let socialPath: string | undefined;
   if (options.render) {
+    if (!hasUsableAfmMusic(music.reel)) {
+      throw new Error(`Production render requires usable AFM music identity${music.warning ? `: ${music.warning}` : ""}`);
+    }
     (options.runExistingCommand ?? runExistingCommand)("render", reelId);
     socialPath = await (options.writeSocialCopy ?? writeSocialCopy)(result.handoff, result.plan, outputDirectory);
   }

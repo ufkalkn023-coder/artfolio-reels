@@ -7,11 +7,18 @@ import { createPlannerUsageTelemetry } from "../src/planner/telemetry";
 import { writeCachedPlan } from "../src/planner/cache";
 import { loadReelProductionHistory } from "../src/planner/production-history";
 import { PlannerFailureCategory, PlannerFailureError } from "../src/planner/failure";
+import { ReelDataSchema, type ReelData } from "../src/v2/schema";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
 };
 const truthy = (value: unknown, label: string): void => { if (!value) throw new Error(label); };
+const enrichWithAfmMusic = async (reel: ReelData) => ({
+  reel: ReelDataSchema.parse({
+    ...reel,
+    music: { src: "reel-audio/AFM-DE03-07.wav", trackId: "AFM-DE03-07", subfamily: "DE03", volume: 0.18, start: 0, durationSeconds: 120, fadeIn: 0.6, fadeOut: 1.5 },
+  }),
+});
 
 const run = async (): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), "artfolio-reel-batch-"));
@@ -205,6 +212,7 @@ const run = async (): Promise<void> => {
   const rendered = await runReelBatch({
     queue: queue(candidates.slice(0, 2), 2, 2), render: true, cacheDirectory: join(root, "plans-render"), reelDirectory: join(root, "reels-render"), outputDirectory: join(root, "output-render"),
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
+    enrichMusic: enrichWithAfmMusic,
     runExistingCommand: (name, reelId) => { renders.push(`${name}:${reelId}`); if (name === "render" && reelId === "batch-1") throw new Error("render failure"); },
   });
   equal(rendered.qcPassedCount, 2, "render failures do not alter QC completion");
@@ -220,6 +228,7 @@ const run = async (): Promise<void> => {
   const mixedRender = await runReelBatch({
     queue: queue(candidates.slice(0, 3), 2, 3), render: true, cacheDirectory: join(root, "plans-mixed-render"), reelDirectory: join(root, "reels-mixed-render"), outputDirectory: join(root, "output-mixed-render"),
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
+    enrichMusic: enrichWithAfmMusic,
     runExistingCommand: (name, reelId) => { if (name === "render" && reelId === "batch-1") throw new Error("render failure"); },
   });
   equal(mixedRender.qcPassedCount, 3, "render mode continues beyond the QC target after failure");
@@ -229,6 +238,7 @@ const run = async (): Promise<void> => {
   const zeroRender = await runReelBatch({
     queue: queue(candidates.slice(0, 2), 1, 2), render: true, cacheDirectory: join(root, "plans-zero-render"), reelDirectory: join(root, "reels-zero-render"), outputDirectory: join(root, "output-zero-render"),
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
+    enrichMusic: enrichWithAfmMusic,
     runExistingCommand: (name) => { if (name === "render") throw new Error("render failure"); },
   });
   equal(zeroRender.qcPassedCount, 2, "zero-render batch may still contain QC passes");
@@ -247,7 +257,7 @@ const run = async (): Promise<void> => {
   const renderHistory = await runReelBatch({
     queue: queue([candidates[0]], 1, 1), render: true, cacheDirectory: join(root, "plans-history-render"), reelDirectory: join(root, "reels-history-render"), outputDirectory: join(root, "output-history-render"),
     productionHistory: await loadReelProductionHistory(historyPath), productionHistoryPath: historyPath, batchId: "history-render-batch",
-    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, runExistingCommand: () => undefined,
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, enrichMusic: enrichWithAfmMusic, runExistingCommand: () => undefined,
   });
   equal(renderHistory.candidates[0].historyStatus, "RENDERED", "render completion upgrades history");
   equal((await loadReelProductionHistory(historyPath)).entries[0].status, "RENDERED", "rendered status persists");
@@ -255,10 +265,34 @@ const run = async (): Promise<void> => {
     queue: queue([candidates[1]], 1, 1), render: true, cacheDirectory: join(root, "plans-history-render-failure"), reelDirectory: join(root, "reels-history-render-failure"), outputDirectory: join(root, "output-history-render-failure"),
     productionHistory: await loadReelProductionHistory(historyPath), productionHistoryPath: historyPath, batchId: "history-render-failure",
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
-    runExistingCommand: (name) => { if (name === "render") throw new Error("render failed"); },
+    enrichMusic: enrichWithAfmMusic,
+    runExistingCommand: (name) => { if (name === "render") throw new Error("Selected music audio is silent or inaudible"); },
   });
-  equal(failedRenderHistory.historyWrittenCount, 0, "render failure writes no production history");
-  equal((await loadReelProductionHistory(historyPath)).entries.length, 1, "render failure does not create a history entry");
+  equal(failedRenderHistory.historyWrittenCount, 0, "deep audio verification failure writes no production history");
+  equal((await loadReelProductionHistory(historyPath)).entries.length, 1, "deep audio verification failure does not create a history entry");
+
+  for (const [failure, warning] of [
+    ["AFM library missing", "AFM library unavailable"],
+    ["eligible AFM catalog empty", "AFM has no accepted production-ready WAV candidates"],
+    ["selected AFM master missing", "AFM music unavailable: selected master missing"],
+    ["audio localization failure", "AFM music unavailable: localization failed"],
+  ]) {
+    const musicFailureHistoryPath = join(root, `history-${failure.replace(/ /g, "-")}.json`);
+    const musicFailureCommands: string[] = [];
+    const musicFailure = await runReelBatch({
+      queue: queue([candidates[0]], 1, 1), render: true, cacheDirectory: join(root, `plans-${failure}`), reelDirectory: join(root, `reels-${failure}`), outputDirectory: join(root, `output-${failure}`),
+      productionHistory: await loadReelProductionHistory(musicFailureHistoryPath), productionHistoryPath: musicFailureHistoryPath, batchId: `music-${failure}`,
+      callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized,
+      enrichMusic: async (reel) => ({ reel, warning }),
+      runExistingCommand: (name) => { musicFailureCommands.push(name); },
+    });
+    equal(musicFailure.outcome, "SHORTFALL", `${failure}: render mode cannot complete without usable AFM audio`);
+    equal(musicFailure.renderedCount, 0, `${failure}: candidate is not terminally rendered`);
+    equal(musicFailure.candidates[0].renderStatus, "FAILED", `${failure}: candidate records a failed production render state`);
+    equal(musicFailure.candidates[0].errorCode, "MUSIC_FAILED", `${failure}: failure is classified before final render`);
+    truthy(!musicFailureCommands.includes("render"), `${failure}: final render is never invoked`);
+    equal((await loadReelProductionHistory(musicFailureHistoryPath)).entries.filter((entry) => entry.status === "RENDERED").length, 0, `${failure}: no successful RENDERED history outcome is recorded`);
+  }
   console.log("Reel batch tests passed");
 };
 

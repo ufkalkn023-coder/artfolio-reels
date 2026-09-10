@@ -3,6 +3,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { verifyRenderMedia, type RenderVerification } from "../media/render-verification";
+import { hasUsableAfmMusic } from "../music/enrichment";
 import { resolveRenderOutputPath } from "../planner/render-path";
 import { resolveSocialOutputPath } from "../social/social-copy";
 import { VIDEO } from "../v2/design";
@@ -285,13 +286,17 @@ export const verifyReleasePackage = async ({
 
   let media: RenderVerification | undefined;
   if (reel) {
-    try {
-      media = await verifyMedia(resolve(directory, manifest.files.video), {
-        durationSeconds: getDurationInFrames(reel) / VIDEO.fps,
-        requireAudio: Boolean(reel.music),
-      }, { deep });
-    } catch (error) {
-      errors.push(`Invalid release MP4: ${error instanceof Error ? error.message : String(error)}`);
+    if (!hasUsableAfmMusic(reel)) {
+      errors.push("Release ReelData is missing usable AFM music identity");
+    } else {
+      try {
+        media = await verifyMedia(resolve(directory, manifest.files.video), {
+          durationSeconds: getDurationInFrames(reel) / VIDEO.fps,
+          requireAudio: true,
+        }, { deep });
+      } catch (error) {
+        errors.push(`Invalid release MP4: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
   return { valid: errors.length === 0, directory, reelId: manifest.reelId, errors, ...(media ? { media } : {}) };
@@ -345,6 +350,7 @@ export const packageRelease = async ({
   }
 
   const reel = await loadVerifiedReel(reelId, reelDirectory);
+  if (!hasUsableAfmMusic(reel)) throw new Error("Production release requires usable AFM music identity");
   const paths = resolveReleasePaths({ reelId, outputDirectory, reelDirectory, artworkTitle: reel.artworks[0].title });
   await Promise.all([
     requireNonEmptyFile(paths.video, "rendered Reel MP4"),
@@ -353,8 +359,8 @@ export const packageRelease = async ({
   ]);
   await verifyMedia(paths.video, {
     durationSeconds: getDurationInFrames(reel) / VIDEO.fps,
-    requireAudio: Boolean(reel.music),
-  });
+    requireAudio: true,
+  }, { deep: true });
 
   const releasesDirectory = dirname(releaseDirectory);
   await mkdir(releasesDirectory, { recursive: true });
@@ -372,7 +378,7 @@ export const packageRelease = async ({
     await writeFile(join(stagedDirectory, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
     const manifest = await createReleaseManifest(stagedDirectory, reelId, generatedAt);
     await writeFile(join(stagedDirectory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    const verification = await verifyReleasePackage({ releaseDirectory: stagedDirectory, reelDirectory, verifyMedia });
+    const verification = await verifyReleasePackage({ releaseDirectory: stagedDirectory, reelDirectory, verifyMedia, deep: true });
     if (!verification.valid) throw new Error(`Release verification failed: ${verification.errors.join("; ")}`);
     await moveIntoPlace(stagedDirectory, releaseDirectory, overwrite);
     return { directory: releaseDirectory, metadata, manifest };

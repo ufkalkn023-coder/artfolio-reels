@@ -15,6 +15,7 @@ import {
   resolveSocialOutputPath,
   selectSocialCopyCta,
 } from "../src/social/social-copy";
+import { ReelDataSchema, type ReelData } from "../src/v2/schema";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -24,6 +25,12 @@ const missing = async (path: string, label: string): Promise<void> => {
   try { await readFile(path, "utf8"); } catch { return; }
   throw new Error(`${label}: expected no file at ${path}`);
 };
+const enrichWithAfmMusic = async (reel: ReelData) => ({
+  reel: ReelDataSchema.parse({
+    ...reel,
+    music: { src: "reel-audio/AFM-DE03-07.wav", trackId: "AFM-DE03-07", subfamily: "DE03", volume: 0.18, start: 0, durationSeconds: 120, fadeIn: 0.6, fadeOut: 1.5 },
+  }),
+});
 
 const run = async (): Promise<void> => {
   const questionHook = "How does deliberate brushwork create continuous motion?";
@@ -185,6 +192,7 @@ const run = async (): Promise<void> => {
       return artwork.canonicalId === rejected.handoff.canonicalId ? rejectedPlan : STARRY_NIGHT_MOCK_PLAN;
     },
     localizeArtwork: async (artwork) => ({ artwork, sourcePath: artwork.imagePath, destinationPath: artwork.imagePath, renderablePath: artwork.imagePath }),
+    enrichMusic: enrichWithAfmMusic,
     runExistingCommand: (name, reelId) => {
       if (name === "render" && reelId === renderFailed.handoff.canonicalId) throw new Error("render failed");
       if (name === "qc" && reelId === qcFailed.handoff.canonicalId) throw new Error("QC failed");
@@ -208,6 +216,7 @@ const run = async (): Promise<void> => {
     outputDirectory: join(root, "output-write-failure"),
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
     localizeArtwork: async (artwork) => ({ artwork, sourcePath: artwork.imagePath, destinationPath: artwork.imagePath, renderablePath: artwork.imagePath }),
+    enrichMusic: enrichWithAfmMusic,
     runExistingCommand: () => undefined,
     writeSocialCopy: async () => { throw new Error("social disk unavailable"); },
   });

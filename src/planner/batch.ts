@@ -15,7 +15,7 @@ import { resolveRenderOutputPath } from "./render-path";
 import { PlannerFailureCategory, classifyPlannerFailure, type PlannerFailureCategory as PlannerFailureCategoryValue } from "./failure";
 import { writeSocialCopy, type SocialCopyWriter } from "../social/social-copy";
 import { type MusicSuggestions } from "./reel-plan";
-import { enrichCompletedReelWithAfm, type CompletedReelMusicEnricher } from "../music/enrichment";
+import { enrichCompletedReelWithAfm, hasUsableAfmMusic, type CompletedReelMusicEnricher } from "../music/enrichment";
 import { sanitizeDiagnostic } from "../security/redaction";
 
 export const REEL_BATCH_VERSION = "reel-batch-v1" as const;
@@ -80,7 +80,7 @@ export type BatchCandidateAttempt = {
   musicWarning?: string;
   historyStatus?: ProductionHistoryStatus;
   plannerFailureCategory?: PlannerFailureCategoryValue;
-  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED";
+  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "MUSIC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED";
   errorMessageSafe?: string;
 };
 
@@ -412,6 +412,12 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       attempt.musicWarning = music.warning;
       console.warn(`[afm] artwork=${handoff.canonicalId} warning=${music.warning}`);
     }
+    if (!hasUsableAfmMusic(music.reel)) {
+      attempt.renderStatus = "FAILED";
+      attempt.errorCode = "MUSIC_FAILED";
+      attempt.errorMessageSafe = safeErrorMessage(new Error(`Production render requires usable AFM music identity${music.warning ? `: ${music.warning}` : ""}`));
+      continue;
+    }
     if (music.selection) {
       attempt.musicTrackId = music.selection.track.id;
       attempt.musicSubfamily = music.selection.track.subfamilyCode;
@@ -422,6 +428,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
 
   for (const { handoff, attempt, planned } of renderReadyCandidates) {
     if (renderedCount >= queue.target) break;
+    if (attempt.renderStatus === "FAILED") continue;
     const renderStarted = performance.now();
     try {
       const reelId = artifactIdFor(handoff.canonicalId);

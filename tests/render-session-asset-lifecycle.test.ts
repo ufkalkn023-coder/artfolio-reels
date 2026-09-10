@@ -5,7 +5,7 @@ import { createReelOutputRunner } from "../scripts/reel-output";
 import { localizeArtworkAsset } from "../src/planner/assets";
 import { runReelBatch, type BatchCandidate, type ExistingBatchCommand } from "../src/planner/batch";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
-import { type ReelData } from "../src/v2/schema";
+import { ReelDataSchema, type ReelData } from "../src/v2/schema";
 import { type RenderSession } from "../src/render/render-session";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
@@ -80,7 +80,12 @@ const main = async (): Promise<void> => {
       callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
       localizeArtwork: (artwork) => localizeArtworkAsset(artwork, { publicDirectory, assetDirectory }),
       runExistingCommand: runner.run,
-      enrichMusic: async (reel) => ({ reel }),
+      enrichMusic: async (reel) => ({
+        reel: ReelDataSchema.parse({
+          ...reel,
+          music: { src: "reel-audio/AFM-DE03-07.wav", trackId: "AFM-DE03-07", subfamily: "DE03", volume: 0.18, start: 0, durationSeconds: 120, fadeIn: 0.6, fadeOut: 1.5 },
+        }),
+      }),
       writeSocialCopy: async (_handoff, _plan, outputDirectory = join(root, "output")) => join(outputDirectory, "social.txt"),
     });
     equal(manifest.renderedCount, 2, "both localized candidates render through the shared session");

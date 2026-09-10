@@ -107,6 +107,23 @@ const run = async (): Promise<void> => {
   equal(manifest.sha256["reel.mp4"], await sha256File(join(releaseDirectory, "reel.mp4")), "manifest hashes final video bytes");
   equal((await verifyReleasePackage({ releaseDirectory, reelDirectory: fixture.reelDirectory, verifyMedia })).valid, true, "valid release manifest, hashes, metadata, and media verify");
 
+  for (const failure of ["AFM library missing", "eligible AFM catalog empty", "selected AFM master missing", "audio localization failure"]) {
+    const musicFailure = await createFixture(`music-${failure.replace(/ /g, "-")}`);
+    const visualOnlyReel = JSON.parse(await readFile(musicFailure.paths.reelData, "utf8"));
+    delete visualOnlyReel.music;
+    await writeFile(musicFailure.paths.reelData, JSON.stringify(visualOnlyReel));
+    await rejects(() => packageRelease({ reelId: musicFailure.reelId, outputDirectory: musicFailure.outputDirectory, reelDirectory: musicFailure.reelDirectory, verifyMedia }), "usable AFM", `${failure}: visual-only ReelData is not release-ready`);
+    truthy(!existsSync(resolveReleaseDirectory(musicFailure.reelId, musicFailure.outputDirectory)), `${failure}: no release-ready package is created`);
+  }
+
+  const disappearedAudio = await createFixture("audio-disappeared-before-final-render");
+  const failOnlyUnderDeepVerification: ReleaseMediaVerifier = async (path, expectations, options = {}) => {
+    if (expectations.requireAudio && options.deep) throw new Error("Selected music audio is silent or inaudible");
+    return verifyMedia(path, expectations, options);
+  };
+  await rejects(() => packageRelease({ reelId: disappearedAudio.reelId, outputDirectory: disappearedAudio.outputDirectory, reelDirectory: disappearedAudio.reelDirectory, verifyMedia: failOnlyUnderDeepVerification }), "silent or inaudible", "deep verification rejects audio that disappears before final render");
+  truthy(!existsSync(resolveReleaseDirectory(disappearedAudio.reelId, disappearedAudio.outputDirectory)), "deep audio verification failure leaves no release-ready package");
+
   await rejects(() => packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, createdAt: fixedDate, verifyMedia }), "exists. Pass --overwrite", "existing release refuses overwrite by default");
   await writeFile(fixture.paths.video, "replacement video bytes");
   await packageRelease({ reelId: fixture.reelId, outputDirectory: fixture.outputDirectory, reelDirectory: fixture.reelDirectory, overwrite: true, createdAt: fixedDate, verifyMedia });

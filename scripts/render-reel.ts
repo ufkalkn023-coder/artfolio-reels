@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { verifyRenderMedia } from "../src/media/render-verification";
 import { cleanupStaleRenderTemps, renderAtomically } from "../src/planner/atomic-render";
 import { resolveRenderOutputPath } from "../src/planner/render-path";
+import { hasUsableAfmMusic } from "../src/music/enrichment";
 import {
   createRenderSession,
   withRenderSession,
@@ -29,6 +30,7 @@ export const renderReelVideo = async ({
   createSession = createRenderSession,
 }: RenderReelVideoOptions): Promise<string> => {
   const { reel, compositionId, propsPath } = resolveReel(reelId);
+  if (!hasUsableAfmMusic(reel)) throw new Error("Production render requires usable AFM music identity");
   const artwork = reel.artworks[0];
   const destination = resolveRenderOutputPath(artwork.id, artwork.title, outputDirectory);
   const removedTemps = await cleanupStaleRenderTemps(dirname(destination));
@@ -44,7 +46,7 @@ export const renderReelVideo = async ({
       validate: async (temporaryPath) => {
         const validation = await verifyRenderMedia(temporaryPath, {
           durationSeconds: getDurationInFrames(reel) / VIDEO.fps,
-          requireAudio: Boolean(reel.music || reel.voiceover),
+          requireAudio: true,
         }, { deep: true });
         if (validation.maxVolumeDb !== undefined) {
           console.log(`Validated audio stream: codec=${validation.audio?.codec} max_volume=${validation.maxVolumeDb.toFixed(1)} dB`);

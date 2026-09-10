@@ -19,6 +19,17 @@ export type MusicEnrichmentResult = {
 
 export type CompletedReelMusicEnricher = (reel: ReelData, history: ReelProductionHistory) => Promise<MusicEnrichmentResult>;
 
+export const hasUsableAfmMusic = (reel: ReelData): boolean => {
+  const music = reel.music;
+  const match = music?.trackId ? /^AFM-([A-Z]{2}\d{2})-\d{2}$/.exec(music.trackId) : undefined;
+  return Boolean(
+    music
+    && match
+    && music.subfamily === match[1]
+    && music.src === `reel-audio/${music.trackId}.wav`,
+  );
+};
+
 const configuredNumber = (name: string, fallback: number, maximum: number): number => {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;

@@ -5,6 +5,7 @@ import { runReelBatch, type BatchCandidateQueue } from "../src/planner/batch";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
 import { loadReelProductionHistory } from "../src/planner/production-history";
 import { assertRenderDestinationWritable, renderFilenameForArtwork, resolveRenderOutputPath, slugifyArtworkTitle } from "../src/planner/render-path";
+import { ReelDataSchema, type ReelData } from "../src/v2/schema";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -14,6 +15,12 @@ const throws = (operation: () => unknown, label: string): void => {
   try { operation(); } catch { return; }
   throw new Error(`${label}: expected an error`);
 };
+const enrichWithAfmMusic = async (reel: ReelData) => ({
+  reel: ReelDataSchema.parse({
+    ...reel,
+    music: { src: "reel-audio/AFM-DE03-07.wav", trackId: "AFM-DE03-07", subfamily: "DE03", volume: 0.18, start: 0, durationSeconds: 120, fadeIn: 0.6, fadeOut: 1.5 },
+  }),
+});
 
 const run = async (): Promise<void> => {
   equal(slugifyArtworkTitle("The Death of Cleopatra"), "the-death-of-cleopatra", "normal title becomes a slug");
@@ -48,6 +55,7 @@ const run = async (): Promise<void> => {
     queue, render: true, cacheDirectory: join(root, "plans"), reelDirectory: join(root, "reels"), outputDirectory,
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
     localizeArtwork: async (artwork) => ({ artwork, sourcePath: artwork.imagePath, destinationPath: artwork.imagePath, renderablePath: artwork.imagePath }),
+    enrichMusic: enrichWithAfmMusic,
     runExistingCommand: () => undefined,
     productionHistory: await loadReelProductionHistory(historyPath), productionHistoryPath: historyPath, batchId: "render-path-test",
   });

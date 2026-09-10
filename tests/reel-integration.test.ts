@@ -6,6 +6,8 @@ import { runReelIntegration } from "../src/planner/integration";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
 import { resolveRenderOutputPath } from "../src/planner/render-path";
 import { resolveSocialOutputPath } from "../src/social/social-copy";
+import { loadReelProductionHistory } from "../src/planner/production-history";
+import { ReelDataSchema, type ReelData } from "../src/v2/schema";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -21,6 +23,12 @@ const rejects = async (operation: () => Promise<unknown>, label: string): Promis
   }
   throw new Error(`${label}: expected an error`);
 };
+const enrichWithAfmMusic = async (reel: ReelData) => ({
+  reel: ReelDataSchema.parse({
+    ...reel,
+    music: { src: "reel-audio/AFM-DE03-07.wav", trackId: "AFM-DE03-07", subfamily: "DE03", volume: 0.18, start: 0, durationSeconds: 120, fadeIn: 0.6, fadeOut: 1.5 },
+  }),
+});
 
 const run = async (): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), "artfolio-reel-integration-"));
@@ -69,13 +77,25 @@ const run = async (): Promise<void> => {
   let renderCalls = 0;
   const rendered = await runReelIntegration(handoff, {
     cacheDirectory, reelDirectory, outputDirectory, render: true, runExistingCommand: recordCommand,
-    callPlanner: async () => { renderCalls += 1; return STARRY_NIGHT_MOCK_PLAN; },
+    callPlanner: async () => { renderCalls += 1; return STARRY_NIGHT_MOCK_PLAN; }, enrichMusic: enrichWithAfmMusic,
   });
   equal(renderCalls, 0, "rendering a cached plan does not invoke planner");
   equal(commands.map(([name]) => name).join(","), "qc,render", "render follows successful QC");
   equal(rendered.renderPath, resolveRenderOutputPath(handoff.canonicalId, handoff.title, outputDirectory), "integration reports the actual title-based render path");
   equal(rendered.socialPath, resolveSocialOutputPath(handoff.canonicalId, handoff.title, outputDirectory), "integration reports the matching social-copy path");
   truthy((await readFile(rendered.socialPath!, "utf8")).includes(STARRY_NIGHT_MOCK_PLAN.centralIdea), "successful single-Reel render writes social copy from the accepted plan");
+
+  commands.length = 0;
+  const missingAfmHistoryPath = join(root, "missing-afm-history.json");
+  const missingAfmHistory = await loadReelProductionHistory(missingAfmHistoryPath);
+  await rejects(() => runReelIntegration(handoff, {
+    cacheDirectory, reelDirectory, outputDirectory, render: true, runExistingCommand: recordCommand,
+    productionHistory: missingAfmHistory, productionHistoryPath: missingAfmHistoryPath, batchId: "missing-afm",
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
+    enrichMusic: async (reel) => ({ reel, warning: "AFM library unavailable" }),
+  }), "render mode rejects visual-only ReelData when AFM is unavailable");
+  equal(commands.map(([name]) => name).join(","), "qc", "missing AFM stops before final render");
+  equal((await loadReelProductionHistory(missingAfmHistoryPath)).entries.filter((entry) => entry.status === "RENDERED").length, 0, "missing AFM records no successful RENDERED history outcome");
 
   let invalidCalls = 0;
   await rejects(() => runReelIntegration({ ...handoff, title: "" }, {
