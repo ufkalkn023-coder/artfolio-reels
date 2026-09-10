@@ -1,12 +1,13 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runReelBatch, writeBatchManifest, type BatchCandidate, type BatchCandidateQueue } from "../src/planner/batch";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
 import { createPlannerUsageTelemetry } from "../src/planner/telemetry";
 import { writeCachedPlan } from "../src/planner/cache";
 import { loadReelProductionHistory } from "../src/planner/production-history";
 import { PlannerFailureCategory, PlannerFailureError } from "../src/planner/failure";
+import { resolveRenderOutputPath } from "../src/planner/render-path";
 import { ReelDataSchema, type ReelData } from "../src/v2/schema";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
@@ -261,6 +262,55 @@ const run = async (): Promise<void> => {
   });
   equal(renderHistory.candidates[0].historyStatus, "RENDERED", "render completion upgrades history");
   equal((await loadReelProductionHistory(historyPath)).entries[0].status, "RENDERED", "rendered status persists");
+  equal(renderHistory.completionCount, 1, "a normal render candidate increments terminal completion exactly once");
+
+  const historyTerminalFailurePath = join(root, "history-terminal-failure.json");
+  const historyTerminalFailureOutputDirectory = join(root, "output-history-terminal-failure");
+  const historyTerminalFailure = await runReelBatch({
+    queue: queue(candidates.slice(2, 4), 1, 2), render: true, cacheDirectory: join(root, "plans-history-terminal-failure"), reelDirectory: join(root, "reels-history-terminal-failure"), outputDirectory: historyTerminalFailureOutputDirectory,
+    productionHistory: await loadReelProductionHistory(historyTerminalFailurePath), productionHistoryPath: historyTerminalFailurePath, batchId: "history-terminal-failure",
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, enrichMusic: enrichWithAfmMusic,
+    runExistingCommand: async (name, reelId) => {
+      if (name !== "render") return;
+      const candidate = candidates.find(({ canonicalId }) => canonicalId === reelId)!;
+      const renderPath = resolveRenderOutputPath(candidate.canonicalId, STARRY_NIGHT_HANDOFF.title, historyTerminalFailureOutputDirectory);
+      await mkdir(dirname(renderPath), { recursive: true });
+      await writeFile(renderPath, "verified video");
+    },
+    writeSocialCopy: async (artwork) => {
+      if (artwork.canonicalId === "batch-3") await mkdir(historyTerminalFailurePath);
+      else await rmdir(historyTerminalFailurePath);
+      return join(historyTerminalFailureOutputDirectory, "social", `${artwork.canonicalId}.txt`);
+    },
+  });
+  equal(historyTerminalFailure.renderedCount, 2, "history write failure preserves both verified renders");
+  equal(historyTerminalFailure.completionCount, 1, "history write failure does not increment terminal completion");
+  equal(historyTerminalFailure.candidates.length, 2, "history write failure continues to the next candidate");
+  equal(historyTerminalFailure.outcome, "COMPLETE", "fallback terminal success completes the target after a history write failure");
+  equal(historyTerminalFailure.candidates[0].renderStatus, "PASSED", "history write failure preserves render status");
+  equal(await readFile(resolveRenderOutputPath("batch-3", STARRY_NIGHT_HANDOFF.title, historyTerminalFailureOutputDirectory), "utf8"), "verified video", "history write failure preserves the verified render artifact");
+
+  const historyShortfallPath = join(root, "history-terminal-shortfall.json");
+  const historyShortfallOutputDirectory = join(root, "output-history-terminal-shortfall");
+  const historyShortfall = await runReelBatch({
+    queue: queue([candidates[4]], 1, 1), render: true, cacheDirectory: join(root, "plans-history-terminal-shortfall"), reelDirectory: join(root, "reels-history-terminal-shortfall"), outputDirectory: historyShortfallOutputDirectory,
+    productionHistory: await loadReelProductionHistory(historyShortfallPath), productionHistoryPath: historyShortfallPath, batchId: "history-terminal-shortfall",
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN, localizeArtwork: localized, enrichMusic: enrichWithAfmMusic,
+    runExistingCommand: async (name) => {
+      if (name !== "render") return;
+      const renderPath = resolveRenderOutputPath("batch-5", STARRY_NIGHT_HANDOFF.title, historyShortfallOutputDirectory);
+      await mkdir(dirname(renderPath), { recursive: true });
+      await writeFile(renderPath, "verified video");
+    },
+    writeSocialCopy: async () => {
+      await mkdir(historyShortfallPath);
+      return join(historyShortfallOutputDirectory, "social", "batch-5.txt");
+    },
+  });
+  equal(historyShortfall.renderedCount, 1, "history write failure retains verified render evidence");
+  equal(historyShortfall.completionCount, 0, "history write failure cannot satisfy terminal completion");
+  equal(historyShortfall.outcome, "SHORTFALL", "history write failure yields shortfall when no fallback candidate exists");
+  equal(historyShortfall.candidates[0].renderStatus, "PASSED", "history shortfall preserves render status");
   const failedRenderHistory = await runReelBatch({
     queue: queue([candidates[1]], 1, 1), render: true, cacheDirectory: join(root, "plans-history-render-failure"), reelDirectory: join(root, "reels-history-render-failure"), outputDirectory: join(root, "output-history-render-failure"),
     productionHistory: await loadReelProductionHistory(historyPath), productionHistoryPath: historyPath, batchId: "history-render-failure",

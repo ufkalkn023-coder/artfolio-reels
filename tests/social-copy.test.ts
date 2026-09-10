@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runReelBatch, type BatchCandidateQueue } from "../src/planner/batch";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
+import { resolveRenderOutputPath } from "../src/planner/render-path";
 import { type ReelPlan } from "../src/planner/reel-plan";
 import {
   MAX_METADATA_HASHTAG_LENGTH,
@@ -208,21 +209,58 @@ const run = async (): Promise<void> => {
   equal(manifest.candidates[0].socialPath, successPath, "batch manifest records generated social path");
 
   const writeFailure = await makeCandidate("social-write-failed");
+  const writeFailureOutputDirectory = join(root, "output-write-failure");
+  const writeFailureRenderPath = resolveRenderOutputPath(writeFailure.handoff.canonicalId, writeFailure.handoff.title, writeFailureOutputDirectory);
   const writeFailureManifest = await runReelBatch({
     queue: { target: 1, candidateLimit: 1, candidateCount: 1, candidates: [writeFailure.candidate] },
     render: true,
     cacheDirectory: join(root, "plans-write-failure"),
     reelDirectory: join(root, "reels-write-failure"),
-    outputDirectory: join(root, "output-write-failure"),
+    outputDirectory: writeFailureOutputDirectory,
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
     localizeArtwork: async (artwork) => ({ artwork, sourcePath: artwork.imagePath, destinationPath: artwork.imagePath, renderablePath: artwork.imagePath }),
     enrichMusic: enrichWithAfmMusic,
-    runExistingCommand: () => undefined,
+    runExistingCommand: async (name) => {
+      if (name !== "render") return;
+      await mkdir(dirname(writeFailureRenderPath), { recursive: true });
+      await writeFile(writeFailureRenderPath, "verified video");
+    },
     writeSocialCopy: async () => { throw new Error("social disk unavailable"); },
   });
   equal(writeFailureManifest.renderedCount, 1, "social-copy failure does not misreport a successful render");
+  equal(writeFailureManifest.completionCount, 0, "social-copy failure does not increment terminal completion");
+  equal(writeFailureManifest.outcome, "SHORTFALL", "social-copy failure cannot satisfy the render target");
   equal(writeFailureManifest.candidates[0].renderStatus, "PASSED", "social-copy failure preserves render status");
   equal(writeFailureManifest.candidates[0].errorCode, "SOCIAL_COPY_FAILED", "social-copy failure is visible in the manifest");
+  equal(await readFile(writeFailureRenderPath, "utf8"), "verified video", "social-copy failure preserves the verified render artifact");
+
+  const socialFallback = await makeCandidate("social-fallback");
+  const socialFallbackOutputDirectory = join(root, "output-social-fallback");
+  const socialFallbackManifest = await runReelBatch({
+    queue: { target: 1, candidateLimit: 2, candidateCount: 2, candidates: [writeFailure.candidate, socialFallback.candidate] },
+    render: true,
+    cacheDirectory: join(root, "plans-social-fallback"),
+    reelDirectory: join(root, "reels-social-fallback"),
+    outputDirectory: socialFallbackOutputDirectory,
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
+    localizeArtwork: async (artwork) => ({ artwork, sourcePath: artwork.imagePath, destinationPath: artwork.imagePath, renderablePath: artwork.imagePath }),
+    enrichMusic: enrichWithAfmMusic,
+    runExistingCommand: async (name, reelId) => {
+      if (name !== "render") return;
+      const artwork = reelId === writeFailure.handoff.canonicalId ? writeFailure.handoff : socialFallback.handoff;
+      const renderPath = resolveRenderOutputPath(artwork.canonicalId, artwork.title, socialFallbackOutputDirectory);
+      await mkdir(dirname(renderPath), { recursive: true });
+      await writeFile(renderPath, "verified video");
+    },
+    writeSocialCopy: async (artwork) => {
+      if (artwork.canonicalId === writeFailure.handoff.canonicalId) throw new Error("social disk unavailable");
+      return join(socialFallbackOutputDirectory, "social", `${artwork.canonicalId}.txt`);
+    },
+  });
+  equal(socialFallbackManifest.renderedCount, 2, "both candidates retain verified render evidence");
+  equal(socialFallbackManifest.completionCount, 1, "only the candidate with social copy counts toward terminal completion");
+  equal(socialFallbackManifest.candidates.length, 2, "social-copy failure continues to the next candidate");
+  equal(socialFallbackManifest.outcome, "COMPLETE", "fallback terminal success completes the target");
   console.log("Social copy tests passed");
 };
 

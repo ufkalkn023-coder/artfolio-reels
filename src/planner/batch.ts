@@ -80,7 +80,7 @@ export type BatchCandidateAttempt = {
   musicWarning?: string;
   historyStatus?: ProductionHistoryStatus;
   plannerFailureCategory?: PlannerFailureCategoryValue;
-  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "MUSIC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED";
+  errorCode?: "HANDOFF_FAILED" | "ASSET_FAILED" | "PLANNER_FAILED" | "QC_FAILED" | "MUSIC_FAILED" | "RENDER_FAILED" | "SOCIAL_COPY_FAILED" | "HISTORY_WRITE_FAILED";
   errorMessageSafe?: string;
 };
 
@@ -217,10 +217,11 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   let acceptedCount = 0;
   let qcPassedCount = 0;
   let renderedCount = 0;
+  let terminalSuccessCount = 0;
   let qcArtifactsRetained = 0;
   let qcArtifactsCleaned = 0;
   let repairGeminiCalls = 0;
-  const completionCount = (): number => options.render ? renderedCount : qcPassedCount;
+  const completionCount = (): number => options.render ? terminalSuccessCount : qcPassedCount;
   let historyWrittenCount = 0;
   let productionHistory = options.productionHistory;
   const recordHistory = async (handoff: ArtworkHandoff, attempt: BatchCandidateAttempt, status: ProductionHistoryStatus): Promise<void> => {
@@ -427,7 +428,7 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
   }
 
   for (const { handoff, attempt, planned } of renderReadyCandidates) {
-    if (renderedCount >= queue.target) break;
+    if (terminalSuccessCount >= queue.target) break;
     if (attempt.renderStatus === "FAILED") continue;
     const renderStarted = performance.now();
     try {
@@ -437,13 +438,23 @@ export const runReelBatch = async (options: RunReelBatchOptions): Promise<ReelBa
       timings.renderDurationMs += elapsed(renderStarted);
       attempt.renderStatus = "PASSED";
       renderedCount += 1;
+      let socialCopySucceeded = true;
       try {
         attempt.socialPath = await writeSocial(handoff, planned.plan, outputDirectory);
       } catch (error) {
+        socialCopySucceeded = false;
         attempt.errorCode = "SOCIAL_COPY_FAILED";
         attempt.errorMessageSafe = safeErrorMessage(error);
       }
-      await recordHistory(handoff, attempt, "RENDERED");
+      let historyWriteSucceeded = true;
+      try {
+        await recordHistory(handoff, attempt, "RENDERED");
+      } catch (error) {
+        historyWriteSucceeded = false;
+        attempt.errorCode = "HISTORY_WRITE_FAILED";
+        attempt.errorMessageSafe = safeErrorMessage(error);
+      }
+      if (socialCopySucceeded && historyWriteSucceeded) terminalSuccessCount += 1;
     } catch (error) {
       timings.renderDurationMs += elapsed(renderStarted);
       attempt.renderStatus = "FAILED";
