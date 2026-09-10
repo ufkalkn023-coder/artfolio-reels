@@ -282,6 +282,55 @@ const verifyAsyncPlannerBehavior = async (): Promise<void> => {
     else process.env.GEMINI_API_KEY = previousApiKeyFor400;
   }
 
+  const previousApiKeyForStageTelemetry = process.env.GEMINI_API_KEY;
+  const originalConsoleInfo = console.info;
+  const stageLogs: string[] = [];
+  let stageTelemetryCalls = 0;
+  try {
+    process.env.GEMINI_API_KEY = "test-api-key";
+    console.info = (message: string) => { stageLogs.push(message); };
+    const plannerResult = await planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
+      stat: async () => ({ size: 4 }),
+      readFile: async () => Buffer.from("image"),
+      fetch: async () => {
+        stageTelemetryCalls += 1;
+        return new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify(STARRY_NIGHT_MOCK_PLAN) }] } }],
+          usageMetadata: {},
+        }), { status: 200 });
+      },
+      appendTelemetry: async () => undefined,
+    });
+    const result = "plan" in plannerResult ? plannerResult.plan : plannerResult;
+    equal(JSON.stringify(result), JSON.stringify(STARRY_NIGHT_MOCK_PLAN), "stage telemetry leaves the returned planner result unchanged");
+    equal(stageTelemetryCalls, 1, "stage telemetry does not introduce an extra Gemini request");
+    equal(stageLogs.map((line) => line.match(/stage=([^ ]+)/)?.[1]).join(","), "request_started,response_headers_received,response_body_complete,json_parse_complete,schema_parse_complete", "stage telemetry logs every successful request boundary once");
+    truthy(stageLogs.every((line) => !line.includes("test-api-key") && !line.includes(STARRY_NIGHT_MOCK_PLAN.hook.text)), "stage telemetry omits credentials and planner content");
+  } finally {
+    console.info = originalConsoleInfo;
+    if (previousApiKeyForStageTelemetry === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousApiKeyForStageTelemetry;
+  }
+
+  const previousApiKeyForAbortTelemetry = process.env.GEMINI_API_KEY;
+  const abortStageLogs: string[] = [];
+  try {
+    process.env.GEMINI_API_KEY = "test-api-key";
+    console.info = (message: string) => { abortStageLogs.push(message); };
+    const error = await rejects(() => planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
+      stat: async () => ({ size: 4 }),
+      readFile: async () => Buffer.from("image"),
+      fetch: async () => { throw new DOMException("aborted", "AbortError"); },
+      appendTelemetry: async () => undefined,
+    }), "aborted Gemini request");
+    equal(classifyPlannerFailure(error), PlannerFailureCategory.TIMEOUT, "aborted Gemini request retains TIMEOUT classification");
+    truthy(abortStageLogs.some((line) => line.includes("stage=request_aborted") && line.includes("failure_stage=fetch_before_headers")), "aborted Gemini request logs its fetch stage");
+  } finally {
+    console.info = originalConsoleInfo;
+    if (previousApiKeyForAbortTelemetry === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousApiKeyForAbortTelemetry;
+  }
+
   const cacheDirectory = await mkdtemp(join(tmpdir(), "artfolio-planner-test-"));
   let calls = 0;
   const testPlanner = async () => {

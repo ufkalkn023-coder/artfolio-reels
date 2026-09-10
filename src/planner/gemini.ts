@@ -164,12 +164,13 @@ export const readGeminiResponseText = async (response: Response, limitBytes: num
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 };
 
-const parseGeminiErrorResponse = async (response: Response, limitBytes: number): Promise<unknown> => {
-  const body = (await readGeminiResponseText(response, limitBytes)).slice(0, 8_192);
+const parseGeminiErrorResponse = async (response: Response, limitBytes: number): Promise<{ bodyText: string; body: unknown }> => {
+  const bodyText = await readGeminiResponseText(response, limitBytes);
+  const body = bodyText.slice(0, 8_192);
   try {
-    return JSON.parse(body) as unknown;
+    return { bodyText, body: JSON.parse(body) as unknown };
   } catch {
-    return undefined;
+    return { bodyText, body: undefined };
   }
 };
 
@@ -182,6 +183,22 @@ export type GeminiPlannerDependencies = {
 
 const isPlannerCallContext = (value: PlannerCallContext | GeminiPlannerDependencies): value is PlannerCallContext =>
   (value as { kind?: unknown }).kind === "MOTION_REPAIR";
+
+type GeminiPlannerRequestStage = "fetch_before_headers" | "body_read" | "json_parse" | "schema_parse";
+
+const logGeminiPlannerRequestStage = (
+  stage: "request_started" | "response_headers_received" | "response_body_complete" | "json_parse_complete" | "schema_parse_complete" | "request_failed" | "request_aborted",
+  artworkId: string,
+  requestKind: "initial" | "repair",
+  startedAt: number,
+  fields: Record<string, string | number> = {},
+): void => {
+  const elapsedMs = stage === "request_started" ? 0 : Math.round(performance.now() - startedAt);
+  const details = Object.entries({ stage, artwork_id: artworkId, request_kind: requestKind, elapsed_ms: elapsedMs, ...fields })
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+  console.info(`[gemini-planner] ${details}`);
+};
 
 /** Called only by the planning CLI after eligibility and cache checks; never imported by render/QC paths. */
 export const planWithGemini = async (
@@ -212,11 +229,24 @@ export const planWithGemini = async (
   }
   const requestStartedAt = performance.now();
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const requestKind = repairContext ? "repair" : "initial";
+  const isAbortOrTimeout = (error: unknown): boolean => timeoutSignal.aborted
+    || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"));
+  const logRequestFailure = (error: unknown, stage: GeminiPlannerRequestStage): void => {
+    logGeminiPlannerRequestStage(
+      isAbortOrTimeout(error) ? "request_aborted" : "request_failed",
+      artwork.canonicalId,
+      requestKind,
+      requestStartedAt,
+      { failure_stage: stage },
+    );
+  };
+  logGeminiPlannerRequestStage("request_started", artwork.canonicalId, requestKind, requestStartedAt);
   const withTimeoutClassification = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {
       return await operation();
     } catch (error) {
-      if (timeoutSignal.aborted || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))) {
+      if (isAbortOrTimeout(error)) {
         throw new PlannerFailureError(PlannerFailureCategory.TIMEOUT, `Gemini planner request timed out after ${timeoutMs}ms`);
       }
       throw error;
@@ -239,18 +269,34 @@ export const planWithGemini = async (
       }),
     });
   } catch (error) {
-    if (timeoutSignal.aborted || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))) {
+    logRequestFailure(error, "fetch_before_headers");
+    if (isAbortOrTimeout(error)) {
       throw new PlannerFailureError(PlannerFailureCategory.TIMEOUT, `Gemini planner request timed out after ${timeoutMs}ms`);
     }
     throw new PlannerFailureError(PlannerFailureCategory.API_ERROR, "Gemini planner request failed (network error)");
   }
+  logGeminiPlannerRequestStage("response_headers_received", artwork.canonicalId, requestKind, requestStartedAt, { http_status: response.status });
   if (!response.ok) {
-    const body = await withTimeoutClassification(() => parseGeminiErrorResponse(response, maxResponseBytes));
-    const reason = summarizeGeminiApiError(response.status, body);
+    let errorResponse: { bodyText: string; body: unknown };
+    try {
+      errorResponse = await withTimeoutClassification(() => parseGeminiErrorResponse(response, maxResponseBytes));
+    } catch (error) {
+      logRequestFailure(error, "body_read");
+      throw error;
+    }
+    logGeminiPlannerRequestStage("response_body_complete", artwork.canonicalId, requestKind, requestStartedAt, { body_bytes: Buffer.byteLength(errorResponse.bodyText) });
+    const reason = summarizeGeminiApiError(response.status, errorResponse.body);
     throw new PlannerFailureError(PlannerFailureCategory.API_ERROR, `Gemini planner request failed (${reason})`);
   }
-  const responseText = await withTimeoutClassification(() => readGeminiResponseText(response, maxResponseBytes));
-  const payload = JSON.parse(responseText) as {
+  let responseText: string;
+  try {
+    responseText = await withTimeoutClassification(() => readGeminiResponseText(response, maxResponseBytes));
+  } catch (error) {
+    logRequestFailure(error, "body_read");
+    throw error;
+  }
+  logGeminiPlannerRequestStage("response_body_complete", artwork.canonicalId, requestKind, requestStartedAt, { body_bytes: Buffer.byteLength(responseText) });
+  let payload: {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     usageMetadata?: {
       promptTokenCount?: number;
@@ -259,6 +305,12 @@ export const planWithGemini = async (
       totalTokenCount?: number;
     };
   };
+  try {
+    payload = JSON.parse(responseText) as typeof payload;
+  } catch (error) {
+    logRequestFailure(error, "json_parse");
+    throw error;
+  }
   const telemetry = createPlannerUsageTelemetry({
     canonicalArtworkId: artwork.canonicalId,
     model,
@@ -269,9 +321,18 @@ export const planWithGemini = async (
   await (dependencies.appendTelemetry ?? appendPlannerUsageTelemetry)(telemetry);
   const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
   if (!text) throw new Error("Gemini planner returned no structured content");
-  const parsed = JSON.parse(text) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (error) {
+    logRequestFailure(error, "json_parse");
+    throw error;
+  }
+  logGeminiPlannerRequestStage("json_parse_complete", artwork.canonicalId, requestKind, requestStartedAt);
   const plan = NewReelPlanSchema.safeParse(parsed);
+  logGeminiPlannerRequestStage("schema_parse_complete", artwork.canonicalId, requestKind, requestStartedAt);
   if (!plan.success) {
+    logRequestFailure(new Error("Gemini planner structured response failed local validation"), "schema_parse");
     throw new Error(`Gemini planner structured response failed local validation (${summarizeInvalidReelPlanResponse(parsed)})`);
   }
   return { plan: plan.data, telemetry };
