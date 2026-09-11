@@ -15,6 +15,7 @@ import { planWithGemini } from "../src/planner/gemini";
 import { buildGeminiMotionRepairPrompt, buildGeminiPlannerPrompt } from "../src/planner/prompt";
 import { type ReelPlan } from "../src/planner/reel-plan";
 import { planArtwork, type PlannerCallContext } from "../src/planner/service";
+import { PLANNER_TEST_IMAGE } from "./fixtures/planner-image";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -101,7 +102,7 @@ const run = async (): Promise<void> => {
     process.env.GEMINI_API_KEY = "test-api-key";
     await planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, repairContext, {
       stat: async () => ({ size: 4 }),
-      readFile: async () => Buffer.from("image"),
+      readFile: async () => PLANNER_TEST_IMAGE,
       fetch: async (_input, init) => {
         const body = JSON.parse(String(init?.body)) as { contents?: Array<{ parts?: Array<{ text?: string }> }> };
         requestedPrompt = body.contents?.[0]?.parts?.[0]?.text ?? "";

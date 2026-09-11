@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
-import { extname, resolve } from "node:path";
+import { resolve } from "node:path";
+import sharp from "sharp";
 import { getGeminiConfig, type GeminiThinkingLevel } from "./config";
 import { type ArtworkHandoff } from "./handoff";
 import { type ReelEligibility } from "./eligibility";
@@ -12,7 +13,22 @@ import { EMPTY_RECENT_MUSIC_CONTEXT, type RecentMusicContext } from "./music-his
 import { sanitizeDiagnostic } from "../security/redaction";
 import { type PlannerUsageTelemetry } from "./telemetry";
 
-const mimeForPath = (filePath: string): string => ({ ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp" }[extname(filePath).toLowerCase()] ?? "image/jpeg");
+const PLANNER_ANALYSIS_MAX_LONG_EDGE = 1600;
+
+/**
+ * Produces an in-memory planner-only analysis image. The verified handoff and
+ * render asset remain unchanged; only Gemini receives this bounded JPEG.
+ */
+const createPlannerAnalysisImage = async (imageBytes: Buffer): Promise<Buffer> => sharp(imageBytes)
+  .rotate()
+  .resize({
+    width: PLANNER_ANALYSIS_MAX_LONG_EDGE,
+    height: PLANNER_ANALYSIS_MAX_LONG_EDGE,
+    fit: "inside",
+    withoutEnlargement: true,
+  })
+  .jpeg({ quality: 90 })
+  .toBuffer();
 
 type GeminiJsonSchema = {
   type?: string;
@@ -227,6 +243,7 @@ export const planWithGemini = async (
   if (imageBytes.byteLength > maxArtworkBytes) {
     throw new Error(`Artwork exceeds the ${maxArtworkBytes}-byte Gemini input limit`);
   }
+  const plannerImageBytes = await createPlannerAnalysisImage(imageBytes);
   const requestStartedAt = performance.now();
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const requestKind = repairContext ? "repair" : "initial";
@@ -263,7 +280,7 @@ export const planWithGemini = async (
           { text: repairContext
             ? buildGeminiMotionRepairPrompt(artwork, eligibility, repairContext, recentMusic)
             : buildGeminiPlannerPrompt(artwork, eligibility, recentMusic) },
-          { inlineData: { mimeType: mimeForPath(artwork.imagePath), data: imageBytes.toString("base64") } },
+          { inlineData: { mimeType: "image/jpeg", data: plannerImageBytes.toString("base64") } },
         ] }],
         generationConfig: buildGeminiPlannerGenerationConfig(thinkingLevel),
       }),

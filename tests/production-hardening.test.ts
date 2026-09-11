@@ -8,6 +8,7 @@ import { planWithGemini, readGeminiResponseText } from "../src/planner/gemini";
 import { STARRY_NIGHT_HANDOFF, STARRY_NIGHT_MOCK_PLAN } from "../src/planner/fixtures/starry-night";
 import { planArtwork } from "../src/planner/service";
 import { buildArtBotSubprocessEnvironment, sanitizeSubprocessStderr } from "../src/planner/subprocess-security";
+import { PLANNER_TEST_IMAGE } from "./fixtures/planner-image";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -16,6 +17,13 @@ const truthy = (value: unknown, label: string): void => { if (!value) throw new 
 const rejects = async (operation: () => Promise<unknown>, label: string): Promise<unknown> => {
   try { await operation(); } catch (error) { return error; }
   throw new Error(`${label}: expected rejection`);
+};
+const waitFor = async (condition: () => boolean, label: string): Promise<void> => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`${label}: condition was not reached`);
 };
 
 const withEnvironment = async (values: Record<string, string>, operation: () => Promise<void>): Promise<void> => {
@@ -70,7 +78,7 @@ await withEnvironment({
   let requestedKey = "";
   const result = await planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
     stat: async () => ({ size: 4 }),
-    readFile: async () => Buffer.from("image"),
+    readFile: async () => PLANNER_TEST_IMAGE,
     fetch: async (input, init) => {
       requestedUrl = String(input);
       requestedKey = new Headers(init?.headers).get("x-goog-api-key") ?? "";
@@ -104,7 +112,7 @@ await withEnvironment({
     let requestSignal: AbortSignal | undefined;
     const completesAfterSixtySeconds = planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
       stat: async () => ({ size: 4 }),
-      readFile: async () => Buffer.from("image"),
+      readFile: async () => PLANNER_TEST_IMAGE,
       fetch: (_input, init) => new Promise((resolve) => {
         requestSignal = init?.signal ?? undefined;
         truthy(!requestSignal?.aborted, "planner request is not aborted at start");
@@ -112,17 +120,17 @@ await withEnvironment({
       }),
       appendTelemetry: async () => undefined,
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitFor(() => requestSignal !== undefined, "successful Gemini request starts");
     equal(timeoutMs, 120_000, "Gemini timeout is 120 seconds");
     advanceTimeout(60_000);
     truthy(!requestSignal?.aborted, "request remains active after 60 seconds");
     resolveRequest(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(STARRY_NIGHT_MOCK_PLAN) }] } }], usageMetadata: {} }), { status: 200 }));
     await completesAfterSixtySeconds;
 
+    const successfulRequestSignal = requestSignal;
     const timeoutOperation = planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
       stat: async () => ({ size: 4 }),
-      readFile: async () => Buffer.from("image"),
+      readFile: async () => PLANNER_TEST_IMAGE,
       fetch: (_input, init) => new Promise((_resolve, reject) => {
         const signal = init?.signal;
         requestSignal = signal ?? undefined;
@@ -132,8 +140,7 @@ await withEnvironment({
       }),
       appendTelemetry: async () => undefined,
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitFor(() => requestSignal !== successfulRequestSignal, "timeout Gemini request starts");
     advanceTimeout(120_000);
     const timeoutError = await rejects(() => timeoutOperation, "Gemini timeout");
     const classifiedTimeout = await timeoutError;
@@ -152,7 +159,7 @@ await withEnvironment({
 }, async () => {
   const networkError = await rejects(() => planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
     stat: async () => ({ size: 4 }),
-    readFile: async () => Buffer.from("image"),
+    readFile: async () => PLANNER_TEST_IMAGE,
     fetch: async () => { throw new Error("https://example.test?key=network-secret"); },
   }), "Gemini network failure");
   equal(classifyPlannerFailure(networkError), PlannerFailureCategory.API_ERROR, "network failure has the API error category");

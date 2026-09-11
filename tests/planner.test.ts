@@ -18,6 +18,7 @@ import { appendPlannerUsageTelemetry, createPlannerUsageTelemetry, mapGeminiUsag
 import { HOOK_TYPES, HookTypeSchema } from "../src/v2/schema";
 import { PlannerFailureCategory, classifyPlannerFailure } from "../src/planner/failure";
 import { formatRecentMusicContext } from "../src/planner/music-history";
+import { PLANNER_TEST_IMAGE } from "./fixtures/planner-image";
 
 const equal = (actual: unknown, expected: unknown, label: string): void => {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`);
@@ -291,7 +292,7 @@ const verifyAsyncPlannerBehavior = async (): Promise<void> => {
     console.info = (message: string) => { stageLogs.push(message); };
     const plannerResult = await planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
       stat: async () => ({ size: 4 }),
-      readFile: async () => Buffer.from("image"),
+      readFile: async () => PLANNER_TEST_IMAGE,
       fetch: async () => {
         stageTelemetryCalls += 1;
         return new Response(JSON.stringify({
@@ -319,7 +320,7 @@ const verifyAsyncPlannerBehavior = async (): Promise<void> => {
     console.info = (message: string) => { abortStageLogs.push(message); };
     const error = await rejects(() => planWithGemini(STARRY_NIGHT_HANDOFF, eligibility, undefined, {
       stat: async () => ({ size: 4 }),
-      readFile: async () => Buffer.from("image"),
+      readFile: async () => PLANNER_TEST_IMAGE,
       fetch: async () => { throw new DOMException("aborted", "AbortError"); },
       appendTelemetry: async () => undefined,
     }), "aborted Gemini request");

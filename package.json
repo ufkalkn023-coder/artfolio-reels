@@ -12,6 +12,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "remotion": "4.0.515",
+    "sharp": "^0.34.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
