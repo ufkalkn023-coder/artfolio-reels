@@ -12,7 +12,7 @@ import { emptyReelProductionHistory, recentMusicContextFromProductionHistory, re
 import { PLANNER_VERSION } from "./config";
 import { enrichCompletedReelWithAfm, hasUsableAfmMusic, type CompletedReelMusicEnricher } from "../music/enrichment";
 
-export type ExistingCommand = (name: "qc" | "render", reelId: string) => void;
+export type ExistingCommand = (name: "qc" | "render", reelId: string) => unknown | Promise<unknown>;
 
 export type ReelIntegrationOptions = {
   forcePlan?: boolean;
@@ -60,7 +60,7 @@ export const runReelIntegration = async (
     recentMusic: options.productionHistory ? recentMusicContextFromProductionHistory(options.productionHistory, undefined, handoff.canonicalId) : undefined,
   });
   const reelId = artifactIdFor(result.handoff.canonicalId);
-  (options.runExistingCommand ?? runExistingCommand)("qc", reelId);
+  await (options.runExistingCommand ?? runExistingCommand)("qc", reelId);
   const music = await (options.enrichMusic ?? enrichCompletedReelWithAfm)(
     result.reel,
     options.productionHistory ?? emptyReelProductionHistory(),
@@ -75,7 +75,7 @@ export const runReelIntegration = async (
     if (!hasUsableAfmMusic(music.reel)) {
       throw new Error(`Production render requires usable AFM music identity${music.warning ? `: ${music.warning}` : ""}`);
     }
-    (options.runExistingCommand ?? runExistingCommand)("render", reelId);
+    await (options.runExistingCommand ?? runExistingCommand)("render", reelId);
     socialPath = await (options.writeSocialCopy ?? writeSocialCopy)(result.handoff, result.plan, outputDirectory);
   }
   if (options.productionHistory && options.productionHistoryPath && options.batchId) {

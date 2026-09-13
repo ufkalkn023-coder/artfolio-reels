@@ -85,6 +85,37 @@ const run = async (): Promise<void> => {
   equal(rendered.socialPath, resolveSocialOutputPath(handoff.canonicalId, handoff.title, outputDirectory), "integration reports the matching social-copy path");
   truthy((await readFile(rendered.socialPath!, "utf8")).includes(STARRY_NIGHT_MOCK_PLAN.centralIdea), "successful single-Reel render writes social copy from the accepted plan");
 
+  const asyncStageEvents: string[] = [];
+  let signalQcStarted!: () => void;
+  const qcStarted = new Promise<void>((resolve) => { signalQcStarted = resolve; });
+  let releaseQc!: () => void;
+  const qcReleased = new Promise<void>((resolve) => { releaseQc = resolve; });
+  const asyncIntegration = runReelIntegration(handoff, {
+    cacheDirectory, reelDirectory, outputDirectory, render: true,
+    runExistingCommand: async (name) => {
+      asyncStageEvents.push(`${name}:started`);
+      if (name === "qc") {
+        signalQcStarted();
+        await qcReleased;
+      }
+      asyncStageEvents.push(`${name}:completed`);
+    },
+    enrichMusic: async (reel) => {
+      asyncStageEvents.push("music");
+      return enrichWithAfmMusic(reel);
+    },
+    writeSocialCopy: async () => {
+      asyncStageEvents.push("social");
+      return join(outputDirectory, "social", "async-ordering.txt");
+    },
+    callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
+  });
+  await qcStarted;
+  equal(asyncStageEvents.join(","), "qc:started", "async QC completes before music and render begin");
+  releaseQc();
+  await asyncIntegration;
+  equal(asyncStageEvents.join(","), "qc:started,qc:completed,music,render:started,render:completed,social", "async output stages run serially and complete before integration returns");
+
   commands.length = 0;
   const missingAfmHistoryPath = join(root, "missing-afm-history.json");
   const missingAfmHistory = await loadReelProductionHistory(missingAfmHistoryPath);
@@ -145,7 +176,11 @@ const run = async (): Promise<void> => {
   let musicCallsAfterFailedQc = 0;
   await rejects(() => runReelIntegration(handoff, {
     cacheDirectory, reelDirectory, outputDirectory, render: true,
-    runExistingCommand: (name) => { failedCommands.push(name); if (name === "qc") throw new Error("QC failure"); },
+    runExistingCommand: async (name) => {
+      failedCommands.push(name);
+      await Promise.resolve();
+      if (name === "qc") throw new Error("QC failure");
+    },
     enrichMusic: async (reel) => { musicCallsAfterFailedQc += 1; return { reel }; },
     callPlanner: async () => STARRY_NIGHT_MOCK_PLAN,
   }), "QC failure stops before render");
